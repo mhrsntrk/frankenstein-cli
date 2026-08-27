@@ -777,3 +777,17 @@ func boolInt(b bool) int {
 
 	return 0
 }
+
+// PendingSenders counts senders awaiting a screener decision. The TUI shows it
+// in a banner, so it needs to be one cheap query rather than a full listing.
+func (s *Store) PendingSenders(ctx context.Context) (int, error) {
+	var n int
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM senders WHERE decision = 'pending'`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count pending senders: %w", err)
+	}
+
+	return n, nil
+}

@@ -46,39 +46,153 @@ func (m *Model) View() string {
 	return b.String()
 }
 
+// header draws the title bar, the box switcher and the screener banner.
+//
+// The box switcher is the part that changes how the client feels: hey-cli
+// keeps every box one keystroke away instead of making you walk back up to a
+// list, and the numbers are always on screen so you never have to remember
+// them.
 func (m *Model) header() string {
-	title := "frankenstein"
+	var b strings.Builder
+
+	b.WriteString(m.titleBar())
+	b.WriteString("\n")
+
+	if m.view == viewBoxes || m.view == viewThreads {
+		if bar := m.boxBar(); bar != "" {
+			b.WriteString(bar)
+			b.WriteString("\n")
+		}
+
+		if banner := m.screenerBanner(); banner != "" {
+			b.WriteString(banner)
+			b.WriteString("\n")
+		}
+	}
+
+	if m.view == viewBoxes && len(m.events) > 0 {
+		b.WriteString(m.agendaLine())
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+// titleBar is "── name ─────────── account ──" sized exactly to the terminal.
+//
+// Widths are computed on the plain text and the styling is applied afterwards,
+// because lipgloss padding is invisible to len() and silently pushes the line
+// past the edge.
+func (m *Model) titleBar() string {
+	name := "frankenstein"
 
 	switch m.view {
 	case viewThreads:
-		title = m.box.Name
+		name = m.box.Name
 	case viewThread, viewMessage:
-		title = truncateStr(m.thread.Conversation.Subject, m.width-4)
+		name = m.thread.Conversation.Subject
 	}
 
-	line := titleStyle.Render(title)
+	width := m.width
+	if width < 24 {
+		width = 24
+	}
 
-	// Today's agenda earns its line only when there is something on it.
-	if m.view == viewBoxes && len(m.events) > 0 {
-		var parts []string
+	name = truncateStr(name, maxInt(8, width/2))
 
-		for _, e := range m.events {
-			when := e.Start.Format("15:04")
-			if e.AllDay {
-				when = "all day"
-			}
+	const lead = "── "
 
-			parts = append(parts, fmt.Sprintf("%s %s", when, e.Title))
+	left := lead + name + " "
 
-			if len(parts) == 3 {
-				break
-			}
+	right := ""
+	if m.account != "" {
+		right = " " + m.account + " ──"
+
+		// Drop the account rather than let it wrap on a narrow terminal.
+		if len([]rune(left))+len([]rune(right))+4 > width {
+			right = ""
+		}
+	}
+
+	fill := width - len([]rune(left)) - len([]rune(right))
+	if fill < 0 {
+		fill = 0
+	}
+
+	return dimStyle.Render(lead) + titleStyle.Render(name) +
+		dimStyle.Render(" "+strings.Repeat("─", fill)+right)
+}
+
+// boxBar lists the numbered boxes, marking the one being viewed.
+func (m *Model) boxBar() string {
+	if len(m.quickBoxes) == 0 {
+		return ""
+	}
+
+	var parts []string
+
+	for i, b := range m.quickBoxes {
+		label := fmt.Sprintf("%d %s", i+1, b.Name)
+
+		if b.Unread > 0 {
+			label = fmt.Sprintf("%s (%d)", label, b.Unread)
 		}
 
-		line += "\n" + dimStyle.Render("  today: "+strings.Join(parts, " · "))
+		if m.view == viewThreads && b.ID == m.box.ID {
+			parts = append(parts, selectedStyle.Render(" "+label+" "))
+
+			continue
+		}
+
+		parts = append(parts, keyStyle.Render(fmt.Sprintf("%d", i+1))+" "+b.Name+unreadCount(b.Unread))
 	}
 
-	return line
+	return "  " + strings.Join(parts, dimStyle.Render("  ·  "))
+}
+
+func unreadCount(n int) string {
+	if n <= 0 {
+		return ""
+	}
+
+	return dimStyle.Render(fmt.Sprintf(" (%d)", n))
+}
+
+// screenerBanner is the call to action hey-cli puts front and centre: the
+// screener is the product, so the count of people waiting should never be
+// somewhere you have to go looking for.
+func (m *Model) screenerBanner() string {
+	if m.pending == 0 {
+		return ""
+	}
+
+	noun := "senders"
+	if m.pending == 1 {
+		noun = "sender"
+	}
+
+	text := fmt.Sprintf(" Screen %d first-time %s · frankenstein screener list ", m.pending, noun)
+
+	return "  " + bannerStyle.Render(text)
+}
+
+func (m *Model) agendaLine() string {
+	var parts []string
+
+	for _, e := range m.events {
+		when := e.Start.Format("15:04")
+		if e.AllDay {
+			when = "all day"
+		}
+
+		parts = append(parts, fmt.Sprintf("%s %s", when, e.Title))
+
+		if len(parts) == 3 {
+			break
+		}
+	}
+
+	return dimStyle.Render("  today: " + strings.Join(parts, " · "))
 }
 
 func (m *Model) footer() string {
@@ -90,18 +204,30 @@ func (m *Model) footer() string {
 		return errorStyle.Render("  " + truncateStr(m.err.Error(), maxInt(10, m.width-4)))
 	}
 
-	keys := "j/k move · enter open · esc back · r sync · q quit"
-	if m.view == viewThreads {
-		keys = "j/k move · enter open · / filter · esc back · q quit"
+	var keys string
+
+	switch m.view {
+	case viewBoxes:
+		keys = key("j/k") + " move  " + key("enter") + " open  " + key("1-9") + " box  " +
+			key("r") + " sync  " + key("q") + " quit"
+	case viewThreads:
+		keys = key("j/k") + " move  " + key("enter") + " open  " + key("/") + " filter  " +
+			key("1-9") + " box  " + key("esc") + " back  " + key("q") + " quit"
+	case viewThread:
+		keys = key("j/k") + " move  " + key("enter") + " read  " + key("esc") + " back  " + key("q") + " quit"
+	default:
+		keys = key("j/k") + " scroll  " + key("esc") + " back  " + key("q") + " quit"
 	}
 
 	status := m.status
 	if m.loading {
-		status = "working..."
+		status = "working…"
 	}
 
-	return statusStyle.Render(fmt.Sprintf("%s   %s", status, keys))
+	return statusStyle.Render(status) + "   " + keys
 }
+
+func key(k string) string { return keyStyle.Render(k) }
 
 func (m *Model) boxesView() string {
 	if len(m.boxes) == 0 {
@@ -117,10 +243,10 @@ func (m *Model) boxesView() string {
 
 		unread := ""
 		if box.Unread > 0 {
-			unread = fmt.Sprintf("  %d", box.Unread)
+			unread = fmt.Sprintf("%d", box.Unread)
 		}
 
-		line := fmt.Sprintf("  %-28s %6d%s", truncateStr(box.Name, 28), box.Total, unread)
+		line := fmt.Sprintf("  %-28s %8d  %5s", truncateStr(box.Name, 28), box.Total, unread)
 
 		if box.Unread > 0 {
 			line = unreadStyle.Render(line)
@@ -137,9 +263,15 @@ func (m *Model) boxesView() string {
 	return b.String()
 }
 
+// threadsView draws the thread list, split into unread and read the way
+// hey-cli splits "New for You" from "Previously Seen".
+//
+// There is no preview snippet. Proton's conversation metadata carries no
+// excerpt, so a snippet would mean decrypting a body per visible row: slow,
+// and against the rule that nothing in the render path touches the network.
 func (m *Model) threadsView() string {
 	if m.loading {
-		return dimStyle.Render("  loading...")
+		return dimStyle.Render("  loading…")
 	}
 
 	if len(m.convs) == 0 {
@@ -150,44 +282,87 @@ func (m *Model) threadsView() string {
 
 	end := minInt(m.convFirst+m.pageSize(), len(m.convs))
 
-	for i := m.convFirst; i < end; i++ {
+	// Section headings are only meaningful if the boundary is on screen.
+	firstRead := -1
+
+	for i, c := range m.convs {
+		if !c.Unread() {
+			firstRead = i
+
+			break
+		}
+	}
+
+	rows := 0
+
+	for i := m.convFirst; i < end && rows < m.pageSize(); i++ {
 		c := m.convs[i]
 
-		from := "(nobody)"
-		if len(c.Senders) > 0 {
-			from = c.Senders[0].Display()
+		if i == 0 && c.Unread() {
+			b.WriteString(sectionStyle.Render("New for You"))
+			b.WriteString("\n")
+
+			rows++
+		} else if i == firstRead && firstRead > 0 {
+			b.WriteString(sectionStyle.Render("Previously Seen"))
+			b.WriteString("\n")
+
+			rows++
 		}
 
-		marker := " "
-		if c.Unread() {
-			marker = "•"
-		}
-
-		count := ""
-		if c.NumMessages > 1 {
-			count = fmt.Sprintf(" (%d)", c.NumMessages)
-		}
-
-		// Subject gets whatever the fixed columns leave behind.
-		subjWidth := maxInt(10, m.width-46)
-
-		line := fmt.Sprintf("%s %-10s  %-22s  %s%s",
-			marker, relTime(c.Time), truncateStr(from, 22),
-			truncateStr(c.Subject, subjWidth), count)
-
-		if c.Unread() {
-			line = unreadStyle.Render(line)
-		}
-
-		if i == m.convIdx {
-			line = selectedStyle.Render(padTo(line, m.width))
-		}
-
-		b.WriteString(line)
+		b.WriteString(m.threadRow(c, i == m.convIdx))
 		b.WriteString("\n")
+
+		rows++
 	}
 
 	return b.String()
+}
+
+// threadRow is one line: unread marker, sender, subject, right-aligned date.
+func (m *Model) threadRow(c mail.Conversation, selected bool) string {
+	from := "(nobody)"
+	if len(c.Senders) > 0 {
+		from = c.Senders[0].Display()
+	}
+
+	marker := "  "
+	if c.Unread() {
+		marker = " •"
+	}
+
+	when := relTime(c.Time)
+
+	count := ""
+	if c.NumMessages > 1 {
+		count = fmt.Sprintf(" (%d)", c.NumMessages)
+	}
+
+	// Fixed columns: marker(2) + gap + sender(22) + gap + date + padding.
+	senderWidth := 22
+	dateWidth := 10
+
+	subjWidth := m.width - (2 + 1 + senderWidth + 2 + dateWidth + 2)
+	if subjWidth < 10 {
+		subjWidth = 10
+	}
+
+	subject := truncateStr(c.Subject+count, subjWidth)
+
+	sender := truncateStr(from, senderWidth)
+
+	body := fmt.Sprintf("%s %-*s  %-*s", marker, senderWidth, sender, subjWidth, subject)
+
+	line := body + "  " + fmt.Sprintf("%*s", dateWidth, when)
+
+	switch {
+	case selected:
+		return selectedStyle.Render(padTo(line, m.width))
+	case c.Unread():
+		return unreadStyle.Render(line)
+	default:
+		return line
+	}
 }
 
 func (m *Model) threadView() string {

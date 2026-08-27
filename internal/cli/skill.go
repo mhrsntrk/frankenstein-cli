@@ -100,7 +100,7 @@ func newTUICmd(app *App) *cobra.Command {
 				cal = p
 			}
 
-			return tui.Run(tui.New(st, syncer, cal, cfg.Calendar.CalendarID))
+			return tui.Run(tui.New(st, syncer, cal, cfg.Calendar.CalendarID, cfg.Screener))
 		},
 	}
 }

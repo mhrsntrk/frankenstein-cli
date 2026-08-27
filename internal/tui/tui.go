@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
+	"github.com/mhrsntrk/frankenstein-cli/internal/config"
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/store"
 	fsync "github.com/mhrsntrk/frankenstein-cli/internal/sync"
@@ -31,13 +32,22 @@ const (
 )
 
 var (
-	titleStyle    = lipgloss.NewStyle().Bold(true).Padding(0, 1)
+	titleStyle    = lipgloss.NewStyle().Bold(true)
 	headerStyle   = lipgloss.NewStyle().Bold(true).Underline(true)
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
 	unreadStyle   = lipgloss.NewStyle().Bold(true)
 	dimStyle      = lipgloss.NewStyle().Faint(true)
 	errorStyle    = lipgloss.NewStyle().Bold(true)
-	statusStyle   = lipgloss.NewStyle().Faint(true).Padding(0, 1)
+	statusStyle   = lipgloss.NewStyle().Faint(true)
+
+	// keyStyle marks the letter you actually press, so the footer reads as
+	// bindings rather than prose.
+	keyStyle = lipgloss.NewStyle().Bold(true)
+
+	sectionStyle = lipgloss.NewStyle().Faint(true).Underline(true)
+
+	// bannerStyle is the screener call to action.
+	bannerStyle = lipgloss.NewStyle().Reverse(true).Bold(true)
 )
 
 // Model is the whole application state.
@@ -69,8 +79,16 @@ type Model struct {
 
 	events []fcal.Event
 
+	// Chrome state. quickBoxes are the boxes bound to the number keys, in the
+	// order they are shown; pending drives the screener banner.
+	quickBoxes []mail.Box
+	pending    int
+	account    string
+
 	filter    textinput.Model
 	filtering bool
+
+	screener config.ScreenerConfig
 
 	width, height int
 
@@ -82,7 +100,7 @@ type Model struct {
 }
 
 // New builds the model. The provider is reached only through the syncer.
-func New(st *store.Store, syncer *fsync.Syncer, cal fcal.Provider, calendarID string) *Model {
+func New(st *store.Store, syncer *fsync.Syncer, cal fcal.Provider, calendarID string, sc config.ScreenerConfig) *Model {
 	ti := textinput.New()
 	ti.Placeholder = "filter"
 	ti.CharLimit = 80
@@ -93,6 +111,7 @@ func New(st *store.Store, syncer *fsync.Syncer, cal fcal.Provider, calendarID st
 		cal:        cal,
 		calendarID: calendarID,
 		filter:     ti,
+		screener:   sc,
 		status:     "loading",
 	}
 }
@@ -104,11 +123,15 @@ type convsMsg []mail.Conversation
 type threadMsg mail.Thread
 type bodyMsg mail.Body
 type eventsMsg []fcal.Event
+type chromeMsg struct {
+	pending int
+	account string
+}
 type syncedMsg fsync.Result
 type errMsg struct{ err error }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.loadBoxes(), m.loadEvents(), m.syncOnce())
+	return tea.Batch(m.loadBoxes(), m.loadEvents(), m.loadChrome(), m.syncOnce())
 }
 
 func (m *Model) loadBoxes() tea.Cmd {
@@ -133,6 +156,26 @@ func (m *Model) loadBoxes() tea.Cmd {
 		}
 
 		return boxesMsg(kept)
+	}
+}
+
+// loadChrome fetches the small facts the header and banner need.
+func (m *Model) loadChrome() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		out := chromeMsg{}
+
+		if n, err := m.store.PendingSenders(ctx); err == nil {
+			out.pending = n
+		}
+
+		if v, err := m.store.Meta(ctx, "account_email"); err == nil {
+			out.account = v
+		}
+
+		return out
 	}
 }
 
@@ -234,7 +277,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case boxesMsg:
 		m.boxes = msg
+		m.quickBoxes = pickQuickBoxes(msg, m.screener)
 		m.status = fmt.Sprintf("%d boxes", len(msg))
+
+		return m, nil
+
+	case chromeMsg:
+		m.pending = msg.pending
+		m.account = msg.account
 
 		return m, nil
 
@@ -273,9 +323,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case syncedMsg:
-		m.status = fmt.Sprintf("synced: %d conversations", msg.Conversations)
+		m.status = fmt.Sprintf("synced %d conversations", msg.Conversations)
 
-		return m, m.loadBoxes()
+		return m, tea.Batch(m.loadBoxes(), m.loadChrome())
 
 	case errMsg:
 		m.err = msg.err
@@ -375,7 +425,57 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.syncOnce()
 	}
 
+	// 1-9 jump straight to a box from anywhere, which is the thing that makes
+	// hey-cli feel fast: you never walk back up to a list to change box.
+	if k := msg.String(); len(k) == 1 && k[0] >= '1' && k[0] <= '9' {
+		i := int(k[0] - '1')
+
+		if i < len(m.quickBoxes) {
+			m.box = m.quickBoxes[i]
+			m.view = viewThreads
+			m.loading = true
+			m.filter.SetValue("")
+
+			return m, m.loadConvs(m.box.ID, "")
+		}
+	}
+
 	return m, nil
+}
+
+// pickQuickBoxes chooses what the number keys bind to: the screener's own
+// boxes first, then the system boxes a person actually reads.
+func pickQuickBoxes(boxes []mail.Box, sc config.ScreenerConfig) []mail.Box {
+	byID := make(map[string]mail.Box, len(boxes))
+	for _, b := range boxes {
+		byID[b.ID] = b
+	}
+
+	var out []mail.Box
+
+	for _, id := range []string{sc.ImboxID, sc.FeedID, sc.PaperTrailID} {
+		if b, ok := byID[id]; ok && id != "" {
+			out = append(out, b)
+		}
+	}
+
+	want := []string{"Inbox", "Starred", "Archive", "Sent", "Drafts"}
+
+	for _, name := range want {
+		for _, b := range boxes {
+			if b.Kind == mail.BoxSystem && b.Name == name {
+				out = append(out, b)
+
+				break
+			}
+		}
+	}
+
+	if len(out) > 9 {
+		out = out[:9]
+	}
+
+	return out
 }
 
 func (m *Model) goBack() (tea.Model, tea.Cmd) {

@@ -103,6 +103,12 @@ func (s *Syncer) Backfill(ctx context.Context) (Result, error) {
 
 	res.Cursor = cursor
 
+	// The TUI shows the account in its title bar and has no provider handle,
+	// so record it here rather than making the render path ask.
+	if addrs, err := s.provider.Addresses(ctx); err == nil && len(addrs) > 0 {
+		_ = s.store.SetMeta(ctx, "account_email", addrs[0].Address)
+	}
+
 	boxes, err := s.provider.Boxes(ctx)
 	if err != nil {
 		return res, err
