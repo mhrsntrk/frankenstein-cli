@@ -1,0 +1,496 @@
+// Package personal holds the domains Proton has no equivalent for: habits,
+// time tracking and a journal.
+//
+// These are local by design. Journal entries are markdown files on disk with
+// only their index in SQLite, so they stay readable and greppable without this
+// tool.
+package personal
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+// Store wraps the shared cache database.
+type Store struct {
+	db         *sql.DB
+	journalDir string
+}
+
+// New returns a Store over an already-open database.
+func New(db *sql.DB, journalDir string) *Store {
+	return &Store{db: db, journalDir: journalDir}
+}
+
+// --- habits -----------------------------------------------------------------
+
+// Habit is something tracked daily.
+type Habit struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Archived bool   `json:"archived"`
+
+	// Streak is consecutive days up to and including today.
+	Streak int `json:"streak"`
+
+	// DoneToday reports today's entry.
+	DoneToday bool `json:"done_today"`
+
+	// Last30 is how many of the last 30 days were done.
+	Last30 int `json:"last_30"`
+}
+
+// AddHabit creates a habit.
+func (s *Store) AddHabit(ctx context.Context, name string) (Habit, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Habit{}, fmt.Errorf("a habit needs a name")
+	}
+
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO habits (name, created) VALUES (?, ?)`, name, time.Now().Unix())
+	if err != nil {
+		return Habit{}, fmt.Errorf("add habit: %w", err)
+	}
+
+	id, _ := res.LastInsertId()
+
+	return Habit{ID: id, Name: name}, nil
+}
+
+// Habits lists habits with their streaks.
+func (s *Store) Habits(ctx context.Context, includeArchived bool) ([]Habit, error) {
+	query := `SELECT id, name, archived FROM habits`
+	if !includeArchived {
+		query += ` WHERE archived = 0`
+	}
+
+	query += ` ORDER BY name`
+
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list habits: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Habit
+
+	for rows.Next() {
+		var (
+			h        Habit
+			archived int
+		)
+
+		if err := rows.Scan(&h.ID, &h.Name, &archived); err != nil {
+			return nil, err
+		}
+
+		h.Archived = archived != 0
+		out = append(out, h)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for i := range out {
+		if err := s.fillHabitStats(ctx, &out[i]); err != nil {
+			return nil, err
+		}
+	}
+
+	return out, nil
+}
+
+// fillHabitStats computes the streak by walking back a day at a time.
+//
+// Days are compared as local calendar dates, never as an epoch division: a
+// day is not always 86400 seconds, and dividing breaks wherever the UTC offset
+// crosses zero.
+func (s *Store) fillHabitStats(ctx context.Context, h *Habit) error {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT day FROM habit_entries WHERE habit_id = ? AND done = 1`, h.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	done := make(map[string]bool)
+
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return err
+		}
+
+		done[d] = true
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	today := time.Now()
+	h.DoneToday = done[dayKey(today)]
+
+	// A streak survives today not being done yet: it counts back from
+	// yesterday in that case, so an unfinished morning does not read as zero.
+	start := 0
+	if !h.DoneToday {
+		start = 1
+	}
+
+	for i := start; ; i++ {
+		if !done[dayKey(today.AddDate(0, 0, -i))] {
+			break
+		}
+
+		h.Streak++
+	}
+
+	for i := 0; i < 30; i++ {
+		if done[dayKey(today.AddDate(0, 0, -i))] {
+			h.Last30++
+		}
+	}
+
+	return nil
+}
+
+func dayKey(t time.Time) string { return t.Format("2006-01-02") }
+
+// CheckHabit marks a habit done (or not) on a day.
+func (s *Store) CheckHabit(ctx context.Context, name string, day time.Time, done bool) (Habit, error) {
+	h, err := s.habitByName(ctx, name)
+	if err != nil {
+		return Habit{}, err
+	}
+
+	if done {
+		_, err = s.db.ExecContext(ctx,
+			`INSERT INTO habit_entries (habit_id, day, done) VALUES (?, ?, 1)
+			 ON CONFLICT(habit_id, day) DO UPDATE SET done = 1`, h.ID, dayKey(day))
+	} else {
+		_, err = s.db.ExecContext(ctx,
+			`DELETE FROM habit_entries WHERE habit_id = ? AND day = ?`, h.ID, dayKey(day))
+	}
+
+	if err != nil {
+		return Habit{}, fmt.Errorf("record habit: %w", err)
+	}
+
+	if err := s.fillHabitStats(ctx, &h); err != nil {
+		return h, err
+	}
+
+	return h, nil
+}
+
+// ArchiveHabit hides a habit without deleting its history.
+func (s *Store) ArchiveHabit(ctx context.Context, name string) error {
+	h, err := s.habitByName(ctx, name)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.db.ExecContext(ctx, `UPDATE habits SET archived = 1 WHERE id = ?`, h.ID)
+
+	return err
+}
+
+func (s *Store) habitByName(ctx context.Context, name string) (Habit, error) {
+	var h Habit
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name FROM habits WHERE lower(name) = lower(?)`, name).Scan(&h.ID, &h.Name)
+	if err == sql.ErrNoRows {
+		return Habit{}, fmt.Errorf("no habit called %q", name)
+	}
+
+	return h, err
+}
+
+// --- time tracking ----------------------------------------------------------
+
+// TimeEntry is one tracked interval. Stopped is nil while running.
+type TimeEntry struct {
+	ID      int64      `json:"id"`
+	Project string     `json:"project"`
+	Note    string     `json:"note,omitempty"`
+	Started time.Time  `json:"started"`
+	Stopped *time.Time `json:"stopped,omitempty"`
+}
+
+// Running reports whether the entry is still open.
+func (e TimeEntry) Running() bool { return e.Stopped == nil }
+
+// Duration is how long the entry ran, or has been running.
+func (e TimeEntry) Duration() time.Duration {
+	if e.Stopped == nil {
+		return time.Since(e.Started)
+	}
+
+	return e.Stopped.Sub(e.Started)
+}
+
+// StartTimer opens a new entry, closing any that was already running so two
+// timers can never overlap.
+func (s *Store) StartTimer(ctx context.Context, project, note string) (TimeEntry, error) {
+	if _, err := s.StopTimer(ctx); err != nil && !strings.Contains(err.Error(), "nothing running") {
+		return TimeEntry{}, err
+	}
+
+	now := time.Now()
+
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO time_entries (project, note, started) VALUES (?, ?, ?)`,
+		project, note, now.Unix())
+	if err != nil {
+		return TimeEntry{}, fmt.Errorf("start timer: %w", err)
+	}
+
+	id, _ := res.LastInsertId()
+
+	return TimeEntry{ID: id, Project: project, Note: note, Started: now}, nil
+}
+
+// StopTimer closes the running entry.
+func (s *Store) StopTimer(ctx context.Context) (TimeEntry, error) {
+	var (
+		e       TimeEntry
+		started int64
+	)
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, project, note, started FROM time_entries
+		 WHERE stopped IS NULL ORDER BY started DESC LIMIT 1`).
+		Scan(&e.ID, &e.Project, &e.Note, &started)
+	if err == sql.ErrNoRows {
+		return TimeEntry{}, fmt.Errorf("nothing running")
+	}
+
+	if err != nil {
+		return TimeEntry{}, err
+	}
+
+	now := time.Now()
+	e.Started = time.Unix(started, 0)
+	e.Stopped = &now
+
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE time_entries SET stopped = ? WHERE id = ?`, now.Unix(), e.ID); err != nil {
+		return e, fmt.Errorf("stop timer: %w", err)
+	}
+
+	return e, nil
+}
+
+// TimeEntries lists entries started on or after since.
+func (s *Store) TimeEntries(ctx context.Context, since time.Time) ([]TimeEntry, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, project, note, started, stopped FROM time_entries
+		 WHERE started >= ? ORDER BY started DESC`, since.Unix())
+	if err != nil {
+		return nil, fmt.Errorf("list time entries: %w", err)
+	}
+	defer rows.Close()
+
+	var out []TimeEntry
+
+	for rows.Next() {
+		var (
+			e       TimeEntry
+			started int64
+			stopped *int64
+		)
+
+		if err := rows.Scan(&e.ID, &e.Project, &e.Note, &started, &stopped); err != nil {
+			return nil, err
+		}
+
+		e.Started = time.Unix(started, 0)
+
+		if stopped != nil {
+			t := time.Unix(*stopped, 0)
+			e.Stopped = &t
+		}
+
+		out = append(out, e)
+	}
+
+	return out, rows.Err()
+}
+
+// TimeByProject totals tracked time per project since a point.
+func (s *Store) TimeByProject(ctx context.Context, since time.Time) (map[string]time.Duration, error) {
+	entries, err := s.TimeEntries(ctx, since)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]time.Duration)
+
+	for _, e := range entries {
+		name := e.Project
+		if name == "" {
+			name = "(unlabelled)"
+		}
+
+		out[name] += e.Duration()
+	}
+
+	return out, nil
+}
+
+// --- journal ----------------------------------------------------------------
+
+// JournalEntry is one day's markdown file.
+type JournalEntry struct {
+	Day     string    `json:"day"`
+	Path    string    `json:"path"`
+	Title   string    `json:"title,omitempty"`
+	Updated time.Time `json:"updated"`
+}
+
+// WriteJournal appends to (or creates) a day's entry and reindexes it.
+func (s *Store) WriteJournal(ctx context.Context, day time.Time, title, body string) (JournalEntry, error) {
+	if err := os.MkdirAll(s.journalDir, 0o700); err != nil {
+		return JournalEntry{}, fmt.Errorf("create journal dir: %w", err)
+	}
+
+	key := dayKey(day)
+	path := filepath.Join(s.journalDir, key+".md")
+
+	var sb strings.Builder
+
+	existing, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		sb.Write(existing)
+
+		if !strings.HasSuffix(string(existing), "\n") {
+			sb.WriteString("\n")
+		}
+
+		sb.WriteString("\n")
+	case os.IsNotExist(err):
+		fmt.Fprintf(&sb, "# %s\n\n", day.Format("Monday, 2 January 2006"))
+	default:
+		return JournalEntry{}, fmt.Errorf("read journal entry: %w", err)
+	}
+
+	if title != "" {
+		fmt.Fprintf(&sb, "## %s\n\n", title)
+	}
+
+	fmt.Fprintf(&sb, "%s\n", strings.TrimSpace(body))
+
+	if err := os.WriteFile(path, []byte(sb.String()), 0o600); err != nil {
+		return JournalEntry{}, fmt.Errorf("write journal entry: %w", err)
+	}
+
+	now := time.Now()
+
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO journal (day, path, title, updated) VALUES (?, ?, ?, ?)
+		ON CONFLICT(day) DO UPDATE SET
+			path = excluded.path,
+			title = CASE WHEN excluded.title <> '' THEN excluded.title ELSE journal.title END,
+			updated = excluded.updated`,
+		key, path, title, now.Unix()); err != nil {
+		return JournalEntry{}, fmt.Errorf("index journal entry: %w", err)
+	}
+
+	return JournalEntry{Day: key, Path: path, Title: title, Updated: now}, nil
+}
+
+// JournalEntries lists indexed entries, newest first.
+func (s *Store) JournalEntries(ctx context.Context, limit int) ([]JournalEntry, error) {
+	query := `SELECT day, path, title, updated FROM journal ORDER BY day DESC`
+
+	var args []any
+
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list journal: %w", err)
+	}
+	defer rows.Close()
+
+	var out []JournalEntry
+
+	for rows.Next() {
+		var (
+			e       JournalEntry
+			updated int64
+		)
+
+		if err := rows.Scan(&e.Day, &e.Path, &e.Title, &updated); err != nil {
+			return nil, err
+		}
+
+		e.Updated = time.Unix(updated, 0)
+		out = append(out, e)
+	}
+
+	return out, rows.Err()
+}
+
+// ReadJournal returns one day's markdown.
+func (s *Store) ReadJournal(ctx context.Context, day time.Time) (string, error) {
+	path := filepath.Join(s.journalDir, dayKey(day)+".md")
+
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", fmt.Errorf("nothing written on %s", dayKey(day))
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	return string(b), nil
+}
+
+// SearchJournal greps the entries for a term, newest first.
+//
+// The index holds only paths, so the search reads the files. On a personal
+// journal that is a few hundred kilobytes and not worth a full-text index.
+func (s *Store) SearchJournal(ctx context.Context, term string) ([]JournalEntry, error) {
+	entries, err := s.JournalEntries(ctx, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	needle := strings.ToLower(term)
+
+	var hits []JournalEntry
+
+	for _, e := range entries {
+		b, err := os.ReadFile(e.Path)
+		if err != nil {
+			continue
+		}
+
+		if strings.Contains(strings.ToLower(string(b)), needle) {
+			hits = append(hits, e)
+		}
+	}
+
+	sort.Slice(hits, func(i, j int) bool { return hits[i].Day > hits[j].Day })
+
+	return hits, nil
+}
+
+// DB exposes the handle for tests and for callers that need a raw query.
+func (s *Store) DB() *sql.DB { return s.db }

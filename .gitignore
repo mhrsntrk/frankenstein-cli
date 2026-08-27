@@ -1,0 +1,10 @@
+/frankenstein
+/dist/
+*.db
+*.db-wal
+*.db-shm
+raw.log
+probe-out/
+session.json
+credentials.json
+.DS_Store
