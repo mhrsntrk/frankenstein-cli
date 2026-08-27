@@ -85,6 +85,17 @@ func New(s *store.Store, p mail.Provider, cfg config.ScreenerConfig) *Screener {
 	return &Screener{store: s, provider: p, cfg: cfg}
 }
 
+// Proton only accepts colours from a fixed palette and answers anything else
+// with 422 Code 2001 "Invalid color". These four are confirmed accepted; they
+// are used as a fallback when the account has no existing labels to borrow
+// from.
+var fallbackPalette = []string{
+	"#8080FF", // Imbox, Proton's own default
+	"#F78400", // Feed
+	"#a839a4", // Paper Trail
+	"#ba1e55", // Screened Out
+}
+
 // Setup creates the four boxes on the provider and returns the config that
 // records their IDs. Existing boxes with the right names are reused, so this
 // is safe to run twice.
@@ -99,45 +110,28 @@ func Setup(ctx context.Context, p mail.Provider) (config.ScreenerConfig, error) 
 		byName[strings.ToLower(b.Name)] = b.ID
 	}
 
-	// Colours mirror HEY's own palette closely enough to be recognisable.
-	wanted := []struct {
-		name  string
-		color string
-		dest  *string
-	}{}
+	palette := paletteFrom(existing)
 
 	var cfg config.ScreenerConfig
 
-	wanted = append(wanted,
-		struct {
-			name  string
-			color string
-			dest  *string
-		}{BoxImbox, "#5CBB5C", &cfg.ImboxID},
-		struct {
-			name  string
-			color string
-			dest  *string
-		}{BoxFeed, "#5C89BB", &cfg.FeedID},
-		struct {
-			name  string
-			color string
-			dest  *string
-		}{BoxPaperTrail, "#BB9F5C", &cfg.PaperTrailID},
-		struct {
-			name  string
-			color string
-			dest  *string
-		}{BoxScreenedOut, "#BB5C5C", &cfg.ScreenedOutID},
-	)
+	wanted := []struct {
+		name string
+		dest *string
+	}{
+		{BoxImbox, &cfg.ImboxID},
+		{BoxFeed, &cfg.FeedID},
+		{BoxPaperTrail, &cfg.PaperTrailID},
+		{BoxScreenedOut, &cfg.ScreenedOutID},
+	}
 
-	for _, w := range wanted {
+	for i, w := range wanted {
 		if id, ok := byName[strings.ToLower(w.name)]; ok {
 			*w.dest = id
+
 			continue
 		}
 
-		box, err := p.CreateBox(ctx, w.name, mail.BoxLabel, w.color)
+		box, err := p.CreateBox(ctx, w.name, mail.BoxLabel, palette[i%len(palette)])
 		if err != nil {
 			return cfg, fmt.Errorf("create %q: %w", w.name, err)
 		}
@@ -148,6 +142,36 @@ func Setup(ctx context.Context, p mail.Provider) (config.ScreenerConfig, error) 
 	cfg.Enabled = true
 
 	return cfg, nil
+}
+
+// paletteFrom returns colours to create the screener boxes with.
+//
+// The confirmed palette comes first so the four boxes get sensible colours in
+// a sensible order. Colours already in use on the account are appended as
+// extras: whatever the server accepted before is by definition inside its
+// palette, so they are a safe backstop if the confirmed list ever stops being.
+func paletteFrom(boxes []mail.Box) []string {
+	seen := make(map[string]bool, len(boxes))
+
+	out := make([]string, 0, len(fallbackPalette)+len(boxes))
+
+	for _, c := range fallbackPalette {
+		seen[c] = true
+		out = append(out, c)
+	}
+
+	for _, b := range boxes {
+		// System boxes all share one colour, so only user-made boxes add
+		// anything.
+		if b.Kind == mail.BoxSystem || b.Color == "" || seen[b.Color] {
+			continue
+		}
+
+		seen[b.Color] = true
+		out = append(out, b.Color)
+	}
+
+	return out
 }
 
 // BoxIDFor maps a decision to the provider box it routes into. Pending and

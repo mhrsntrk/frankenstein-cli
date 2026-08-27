@@ -536,3 +536,40 @@ func TestObserveExcludesOwnAddresses(t *testing.T) {
 		t.Errorf("got %d pending, want 1", len(pending))
 	}
 }
+
+// Proton rejects any colour outside its own palette with 422 Code 2001, so
+// setup borrows colours the account already uses rather than inventing them.
+func TestPaletteBorrowsFromExistingLabels(t *testing.T) {
+	ctx := context.Background()
+	p, _, _ := setup(t)
+
+	p.Boxen = []mail.Box{
+		{ID: "0", Name: "Inbox", Kind: mail.BoxSystem, Color: "#8080FF"},
+		{ID: "1", Name: "Archive", Kind: mail.BoxSystem, Color: "#8080FF"},
+		{ID: "w", Name: "Work", Kind: mail.BoxFolder, Color: "#EC3E7C"},
+		{ID: "p", Name: "Personal", Kind: mail.BoxLabel, Color: "#F78400"},
+	}
+
+	if _, err := screener.Setup(ctx, p); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	used := map[string]bool{"#EC3E7C": false, "#F78400": false}
+
+	for _, b := range p.Boxen {
+		if _, ok := used[b.Color]; ok && b.Kind == mail.BoxLabel {
+			used[b.Color] = true
+		}
+	}
+
+	if !used["#EC3E7C"] && !used["#F78400"] {
+		t.Error("setup did not reuse any colour the account already had")
+	}
+
+	// Every created box must carry a colour; an empty one is rejected too.
+	for _, b := range p.Boxen {
+		if b.Color == "" {
+			t.Errorf("created %q with no colour", b.Name)
+		}
+	}
+}

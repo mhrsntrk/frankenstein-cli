@@ -89,11 +89,26 @@ func newBoxesCmd(app *App) *cobra.Command {
 				return fmt.Errorf("no boxes cached; run `frankenstein sync` first")
 			}
 
+			// The screener's own boxes stay visible even when empty: they are
+			// the point of the tool, and a fresh setup leaves all four at zero.
+			pinned := make(map[string]bool, 4)
+
+			if cfg, err := app.Config(); err == nil {
+				for _, id := range []string{
+					cfg.Screener.ImboxID, cfg.Screener.FeedID,
+					cfg.Screener.PaperTrailID, cfg.Screener.ScreenedOutID,
+				} {
+					if id != "" {
+						pinned[id] = true
+					}
+				}
+			}
+
 			shown := boxes[:0:0]
 
 			for _, b := range boxes {
 				// Empty aggregates and unused categories are noise unless asked for.
-				if !all && b.Total == 0 && b.Kind != mail.BoxSystem {
+				if !all && b.Total == 0 && b.Kind != mail.BoxSystem && !pinned[b.ID] {
 					continue
 				}
 
