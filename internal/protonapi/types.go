@@ -334,38 +334,52 @@ const (
 // Proton classifies inbound mail server-side into categories, which behave as
 // system labels: they appear in LabelIDs and in the conversation counts. But
 // /core/v4/labels rejects any Type outside 1-4, so they are never listed and
-// carry no server-provided names. These IDs were confirmed against a live
-// account; the names follow Proton's own apps.
+// carry no server-provided names at all.
+//
+// The IDs are confirmed. The names are inferred from what actually lands in
+// each one on a real mailbox, not from any Proton documentation:
+//
+//	20  small, community and social senders
+//	21  retailers and product marketing
+//	22  service and developer notifications
+//	23  never observed with any mail in it
+//	24  the bulk of the mailbox: personal correspondence, banking, invoices
+//	25  Substack and similar subscription writing
+//	26  mailing lists and working groups
+//
+// 24 being the default matters most, because it is the one the screener maps
+// to the Imbox. An earlier guess had 24 as "Transactions", which suggested
+// filing personal mail into the Paper Trail.
 const (
-	CategoryDefaultLabel      = "20"
-	CategoryPromotionsLabel   = "21"
-	CategorySocialLabel       = "22"
-	CategoryNewslettersLabel  = "23"
-	CategoryTransactionsLabel = "24"
-	CategoryUpdatesLabel      = "25"
-	CategoryForumsLabel       = "26"
+	CategorySocialLabel      = "20"
+	CategoryPromotionsLabel  = "21"
+	CategoryUpdatesLabel     = "22"
+	CategoryUnknownLabel     = "23"
+	CategoryDefaultLabel     = "24"
+	CategoryNewslettersLabel = "25"
+	CategoryForumsLabel      = "26"
 )
 
 // CategoryLabels lists every category label ID in order.
 var CategoryLabels = []string{
 	CategoryDefaultLabel,
-	CategoryPromotionsLabel,
 	CategorySocialLabel,
-	CategoryNewslettersLabel,
-	CategoryTransactionsLabel,
+	CategoryPromotionsLabel,
 	CategoryUpdatesLabel,
+	CategoryNewslettersLabel,
 	CategoryForumsLabel,
+	CategoryUnknownLabel,
 }
 
 // CategoryNames maps a category label ID to its display name.
 var CategoryNames = map[string]string{
-	CategoryDefaultLabel:      "Primary",
-	CategoryPromotionsLabel:   "Promotions",
-	CategorySocialLabel:       "Social",
-	CategoryNewslettersLabel:  "Newsletters",
-	CategoryTransactionsLabel: "Transactions",
-	CategoryUpdatesLabel:      "Updates",
-	CategoryForumsLabel:       "Forums",
+	CategoryDefaultLabel:     "Primary",
+	CategorySocialLabel:      "Social",
+	CategoryPromotionsLabel:  "Promotions",
+	CategoryUpdatesLabel:     "Updates",
+	CategoryNewslettersLabel: "Newsletters",
+	CategoryForumsLabel:      "Forums",
+	CategoryUnknownLabel:     "Category 23",
 }
 
 // IsCategoryLabel reports whether a label ID is one of Proton's categories.

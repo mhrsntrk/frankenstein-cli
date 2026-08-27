@@ -267,8 +267,11 @@ func TestSuggestUsesProviderSignals(t *testing.T) {
 			}
 
 		case "billing@shop.example":
-			if got != screener.PaperTrail {
-				t.Errorf("a transactional sender suggested %q, want paper_trail", got)
+			// Category 24 is the default box, which holds personal mail and
+			// banking alike, so it suggests the Imbox rather than filing
+			// correspondence somewhere unread.
+			if got != screener.Imbox {
+				t.Errorf("a default-category sender suggested %q, want imbox", got)
 			}
 
 		case "ada@example.com":
@@ -399,4 +402,137 @@ func has(hay []string, needle string) bool {
 	}
 
 	return false
+}
+
+// The cache is warm, not a mirror: message rows exist only for threads that
+// have been opened. A screener that read messages alone would be empty right
+// after a first sync, which is when it matters most.
+func TestObserveWorksFromConversationsAlone(t *testing.T) {
+	ctx := context.Background()
+	p, st, cfg := setup(t)
+
+	now := time.Now().Truncate(time.Second)
+
+	if err := st.PutConversations(ctx, []mail.Conversation{
+		{
+			ID: "c1", Subject: "Digest", Time: now, NumMessages: 3,
+			Senders: []mail.Address{{Name: "Weekly", Address: "news@list.example"}},
+			BoxIDs:  []string{"0"},
+		},
+		{
+			ID: "c2", Subject: "Hi", Time: now.Add(-time.Hour), NumMessages: 1,
+			Senders: []mail.Address{{Address: "ada@example.com"}},
+			BoxIDs:  []string{"0"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// No messages cached at all.
+	sc := screener.New(st, p, cfg)
+
+	n, err := sc.Observe(ctx)
+	if err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+
+	if n != 2 {
+		t.Fatalf("observed %d senders from conversations, want 2", n)
+	}
+
+	pending, _ := sc.Pending(ctx, 0)
+	if len(pending) != 2 {
+		t.Fatalf("got %d pending, want 2", len(pending))
+	}
+
+	for _, s := range pending {
+		if s.Address == "news@list.example" && s.MessageCount != 3 {
+			t.Errorf("message count = %d, want the conversation's 3", s.MessageCount)
+		}
+	}
+}
+
+// Conversations carry no newsletter link, so it has to come from the cached
+// subscriptions by sender address, or the Feed suggestion never fires on a
+// freshly synced cache.
+func TestObserveLinksNewslettersBySenderAddress(t *testing.T) {
+	ctx := context.Background()
+	p, st, cfg := setup(t)
+
+	now := time.Now().Truncate(time.Second)
+
+	if err := st.PutConversations(ctx, []mail.Conversation{{
+		ID: "c1", Subject: "Digest", Time: now, NumMessages: 1,
+		Senders: []mail.Address{{Address: "news@list.example"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.PutNewsletters(ctx, []mail.Newsletter{{
+		ID: "sub-1", Name: "Weekly",
+		Sender: mail.Address{Address: "News@List.Example"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	sc := screener.New(st, p, cfg)
+
+	if _, err := sc.Observe(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, _ := sc.Pending(ctx, 0)
+	if len(pending) != 1 {
+		t.Fatalf("got %d pending, want 1", len(pending))
+	}
+
+	if pending[0].NewsletterID != "sub-1" {
+		t.Errorf("newsletter link = %q, want sub-1", pending[0].NewsletterID)
+	}
+
+	if got, _ := sc.Suggest(ctx, pending[0]); got != screener.Feed {
+		t.Errorf("suggestion = %q, want feed", got)
+	}
+}
+
+// Sent threads have the account as their sender; without filtering, the user
+// would end up in their own screener.
+func TestObserveExcludesOwnAddresses(t *testing.T) {
+	ctx := context.Background()
+	p, st, cfg := setup(t)
+
+	p.Own = []mail.Address{{Address: "me@example.com"}}
+
+	now := time.Now().Truncate(time.Second)
+
+	if err := st.PutConversations(ctx, []mail.Conversation{
+		{
+			ID: "sent1", Subject: "Re: thing", Time: now, NumMessages: 1,
+			Senders: []mail.Address{{Address: "ME@example.com"}},
+		},
+		{
+			ID: "c1", Subject: "Hi", Time: now, NumMessages: 1,
+			Senders: []mail.Address{{Address: "ada@example.com"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sc := screener.New(st, p, cfg)
+
+	if _, err := sc.Observe(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, _ := sc.Pending(ctx, 0)
+
+	for _, s := range pending {
+		if s.Address == "me@example.com" {
+			t.Error("the account's own address reached the screener")
+		}
+	}
+
+	if len(pending) != 1 {
+		t.Errorf("got %d pending, want 1", len(pending))
+	}
 }

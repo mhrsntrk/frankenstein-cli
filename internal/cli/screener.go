@@ -99,9 +99,12 @@ func newSyncCmd(app *App) *cobra.Command {
 
 			// Keep the screener's view of senders current after every sync.
 			if sc, err := newScreener(cmd, app); err == nil {
-				if _, err := sc.Observe(ctx); err != nil {
+				n, err := sc.Observe(ctx)
+				if err != nil {
 					fmt.Fprintf(app.Err, "warning: could not update senders: %v\n", err)
 				}
+
+				res.Senders = n
 			}
 
 			return app.Emit(res, func(w io.Writer) {
@@ -109,11 +112,21 @@ func newSyncCmd(app *App) *cobra.Command {
 					fmt.Fprintln(w, "Full resync.")
 				}
 
+				if res.Boxes == 0 && res.Conversations == 0 && res.Messages == 0 {
+					fmt.Fprintf(w, "Already up to date. %d senders known.\n", res.Senders)
+
+					return
+				}
+
 				fmt.Fprintf(w, "%d boxes, %d conversations, %d messages",
 					res.Boxes, res.Conversations, res.Messages)
 
 				if res.Newsletters > 0 {
 					fmt.Fprintf(w, ", %d newsletters", res.Newsletters)
+				}
+
+				if res.Senders > 0 {
+					fmt.Fprintf(w, ", %d senders", res.Senders)
 				}
 
 				fmt.Fprintln(w)

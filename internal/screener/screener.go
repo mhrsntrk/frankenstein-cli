@@ -19,6 +19,7 @@ import (
 
 	"github.com/mhrsntrk/frankenstein-cli/internal/config"
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
+	"github.com/mhrsntrk/frankenstein-cli/internal/protonapi"
 	"github.com/mhrsntrk/frankenstein-cli/internal/store"
 )
 
@@ -167,15 +168,51 @@ func (s *Screener) BoxIDFor(d Decision) string {
 }
 
 // Observe records senders seen in the cache, creating pending entries for ones
-// the screener has not met. It does not route anything; that is Apply's job.
+// the screener has not met. It does not route anything; that is Decide's job.
+//
+// Senders come from conversations first and messages second. That matters: the
+// cache is warm, not a mirror, so message rows only exist for threads that have
+// been opened. Reading messages alone would leave the screener empty after a
+// fresh sync, which is exactly when it is most useful.
+//
+// The account's own addresses are excluded, or every thread in Sent would put
+// the user into their own screener.
 func (s *Screener) Observe(ctx context.Context) (int, error) {
+	own := make(map[string]bool)
+
+	if addrs, err := s.provider.Addresses(ctx); err == nil {
+		for _, a := range addrs {
+			own[strings.ToLower(a.Address)] = true
+		}
+	}
+
 	rows, err := s.store.DB().QueryContext(ctx, `
-		SELECT json_extract(from_addr, '$.address') AS addr,
-		       json_extract(from_addr, '$.name')    AS name,
-		       MIN(time), MAX(time), COUNT(*),
-		       COALESCE(MAX(newsletter_id), '')
-		FROM messages
-		WHERE is_draft = 0 AND addr IS NOT NULL AND addr <> ''
+		SELECT addr,
+		       MAX(name)          AS name,
+		       MIN(t)             AS first_seen,
+		       MAX(t)             AS last_seen,
+		       SUM(n)             AS messages,
+		       COALESCE(MAX(NULLIF(nl, '')), '') AS newsletter_id
+		FROM (
+			SELECT lower(json_extract(senders, '$[0].address'))    AS addr,
+			       COALESCE(json_extract(senders, '$[0].name'), '') AS name,
+			       time                                             AS t,
+			       num_messages                                     AS n,
+			       ''                                               AS nl
+			FROM conversations
+			WHERE json_extract(senders, '$[0].address') IS NOT NULL
+
+			UNION ALL
+
+			SELECT lower(json_extract(from_addr, '$.address')),
+			       COALESCE(json_extract(from_addr, '$.name'), ''),
+			       time,
+			       1,
+			       newsletter_id
+			FROM messages
+			WHERE is_draft = 0 AND json_extract(from_addr, '$.address') IS NOT NULL
+		)
+		WHERE addr IS NOT NULL AND addr <> ''
 		GROUP BY addr`)
 	if err != nil {
 		return 0, fmt.Errorf("scan senders: %w", err)
@@ -191,11 +228,17 @@ func (s *Screener) Observe(ctx context.Context) (int, error) {
 	var seen []row
 
 	for rows.Next() {
-		var r row
-		var name sql.NullString
+		var (
+			r    row
+			name sql.NullString
+		)
 
 		if err := rows.Scan(&r.addr, &name, &r.first, &r.last, &r.count, &r.newsletter); err != nil {
 			return 0, err
+		}
+
+		if own[r.addr] {
+			continue
 		}
 
 		r.name = name.String
@@ -213,7 +256,7 @@ func (s *Screener) Observe(ctx context.Context) (int, error) {
 	defer tx.Rollback()
 
 	// Only the counters move on an existing row: a decision already made must
-	// never be reset by a new message arriving.
+	// never be reset by new mail arriving.
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO senders (address, name, decision, first_seen, last_seen, message_count, newsletter_id)
 		VALUES (?, ?, 'pending', ?, ?, ?, ?)
@@ -232,6 +275,22 @@ func (s *Screener) Observe(ctx context.Context) (int, error) {
 		if _, err := stmt.ExecContext(ctx, r.addr, r.name, r.first, r.last, r.count, r.newsletter); err != nil {
 			return 0, fmt.Errorf("record sender %s: %w", r.addr, err)
 		}
+	}
+
+	// Conversations carry no newsletter link, so fill it in from the cached
+	// subscriptions by sender address. Without this the Feed suggestion would
+	// only work for threads that had already been opened.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE senders
+		SET newsletter_id = (
+			SELECT n.id FROM newsletters n
+			WHERE lower(n.sender_address) = senders.address
+		)
+		WHERE newsletter_id = ''
+		  AND EXISTS (
+			SELECT 1 FROM newsletters n WHERE lower(n.sender_address) = senders.address
+		  )`); err != nil {
+		return 0, fmt.Errorf("link newsletters: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -409,17 +468,24 @@ func (s *Screener) Suggest(ctx context.Context, sn Sender) (Decision, string) {
 		return Feed, "Proton tracks this sender as a mailing list"
 	}
 
+	// Proton's own classification is the next best signal. Nothing here maps to
+	// Paper Trail: no observed category corresponds to receipts, and guessing
+	// one would file real correspondence somewhere the user never reads.
 	category, err := s.senderCategory(ctx, sn.Address)
 	if err == nil {
 		switch category {
-		case "24":
-			return PaperTrail, "Proton categorises this sender as transactional"
-		case "21", "25":
-			return Feed, "Proton categorises this sender as promotions or updates"
-		case "22", "26":
-			return Feed, "Proton categorises this sender as social or forums"
-		case "20":
-			return Imbox, "Proton categorises this sender as primary mail"
+		case protonapi.CategoryDefaultLabel:
+			return Imbox, "Proton files this sender under primary mail"
+		case protonapi.CategoryPromotionsLabel:
+			return Feed, "Proton categorises this sender as promotions"
+		case protonapi.CategoryNewslettersLabel:
+			return Feed, "Proton categorises this sender as a newsletter"
+		case protonapi.CategoryUpdatesLabel:
+			return Feed, "Proton categorises this sender as updates"
+		case protonapi.CategorySocialLabel:
+			return Feed, "Proton categorises this sender as social"
+		case protonapi.CategoryForumsLabel:
+			return Feed, "Proton categorises this sender as a forum or mailing list"
 		}
 	}
 
@@ -428,11 +494,25 @@ func (s *Screener) Suggest(ctx context.Context, sn Sender) (Decision, string) {
 
 // senderCategory returns the category the provider most often assigns to a
 // sender's mail.
+//
+// Like Observe, this reads conversations as well as messages: on a warm cache
+// the message rows may not exist yet, and a suggestion that only worked after
+// opening a thread would be useless.
 func (s *Screener) senderCategory(ctx context.Context, address string) (string, error) {
+	addr := strings.ToLower(address)
+
 	rows, err := s.store.DB().QueryContext(ctx, `
-		SELECT category_id, COUNT(*) AS n FROM messages
-		WHERE lower(json_extract(from_addr, '$.address')) = ? AND category_id <> ''
-		GROUP BY category_id ORDER BY n DESC LIMIT 1`, strings.ToLower(address))
+		SELECT category_id, COUNT(*) AS n
+		FROM (
+			SELECT category_id FROM conversations
+			WHERE lower(json_extract(senders, '$[0].address')) = ? AND category_id <> ''
+
+			UNION ALL
+
+			SELECT category_id FROM messages
+			WHERE lower(json_extract(from_addr, '$.address')) = ? AND category_id <> ''
+		)
+		GROUP BY category_id ORDER BY n DESC LIMIT 1`, addr, addr)
 	if err != nil {
 		return "", err
 	}

@@ -238,7 +238,7 @@ func TestDecodeEventDroppedFields(t *testing.T) {
 		t.Errorf("Conversation = %+v", ce.Conversation)
 	}
 
-	if ce.Conversation.CategoryID != CategoryTransactionsLabel {
+	if ce.Conversation.CategoryID != CategoryDefaultLabel {
 		t.Errorf("CategoryID = %q", ce.Conversation.CategoryID)
 	}
 

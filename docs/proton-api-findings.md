@@ -368,3 +368,48 @@ Fork `go-proton-api`. The work is well-specified and mostly additive:
 `conversation.go`, `newsletter.go`, the dropped `MessageMetadata` fields, the
 dropped `Event` fields, and the missing label constants. Nothing needs
 reverse-engineering; it is all visible in `probe-out/`.
+
+---
+
+## 8. Live-run corrections, 2026-08-28
+
+Three things the first real sync disproved.
+
+### The newsletter Sort parameter does not exist
+
+`/mail/v4/newsletter-subscriptions` rejects any `Sort` with `400 Code 2001` and
+an empty error message. Tried and rejected: `last_received_time`,
+`-last_received_time`, `LastReceivedTime`, `-LastReceivedTime`,
+`lastReceivedTime`, `Name`, `-Name`, `name`, `ReceivedMessageCount`,
+`UnreadMessageCount`, `Time`. `PageSize` and `Active` are accepted; no params
+at all is accepted. Ordering has to happen client-side.
+
+### The category names were wrong
+
+The IDs were right, the meanings were not. Sampling the senders that actually
+land in each category on a real mailbox:
+
+| ID | Share | What lands there | Name |
+|---|---|---|---|
+| 20 | small | community sites, Instagram, job boards | Social |
+| 21 | small | retailers, product marketing | Promotions |
+| 22 | medium | Apple Developer, GitHub, ad platforms | Updates |
+| 23 | never seen with mail | — | unknown |
+| 24 | **the bulk** | personal mail, banking, the user's accountant | Primary |
+| 25 | small | Substack and subscription writing | Newsletters |
+| 26 | small | mailing lists, working groups | Forums |
+
+The first guess had 24 as "Transactions", which made the screener suggest
+filing personal correspondence into the Paper Trail. 24 is the default box and
+holds roughly three quarters of the mailbox.
+
+Nothing observed corresponds to a "Transactions" category, so the screener maps
+no category to Paper Trail. Guessing one would quietly hide real mail.
+
+### Resuming a session burns the refresh token
+
+Proton invalidates a refresh token the moment it is exchanged. Any code path
+that resumes a session without writing the new token back leaves a dead
+credential and forces a fresh login, CAPTCHA included. `auth.Resume` takes the
+credential store rather than a session for this reason: persistence is not
+something a caller can forget.

@@ -57,6 +57,7 @@ type Result struct {
 	Messages      int    `json:"messages"`
 	Newsletters   int    `json:"newsletters"`
 	Evicted       int    `json:"evicted_bodies"`
+	Senders       int    `json:"senders"`
 	FullResync    bool   `json:"full_resync"`
 	Cursor        string `json:"cursor"`
 }
