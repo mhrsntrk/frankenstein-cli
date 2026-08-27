@@ -2,29 +2,16 @@ package protonmail
 
 import (
 	"net/mail"
-	"strings"
 	"time"
 
 	"github.com/ProtonMail/go-proton-api"
 
 	fmail "github.com/mhrsntrk/frankenstein-cli/internal/mail"
+	"github.com/mhrsntrk/frankenstein-cli/internal/protonapi"
 )
 
 // This file is the only place Proton types are translated into the neutral
 // model. Keeping it separate makes it obvious when something leaks.
-
-// systemBoxNames maps Proton's system label IDs to display names. The API
-// returns names for most of these, but not for categories, which are never
-// listed even though they behave as labels.
-var categoryNames = map[string]string{
-	proton.CategoryDefaultLabel:      "Primary",
-	proton.CategoryPromotionsLabel:   "Promotions",
-	proton.CategorySocialLabel:       "Social",
-	proton.CategoryNewslettersLabel:  "Newsletters",
-	proton.CategoryTransactionsLabel: "Transactions",
-	proton.CategoryUpdatesLabel:      "Updates",
-	proton.CategoryForumsLabel:       "Forums",
-}
 
 func toAddress(a *mail.Address) fmail.Address {
 	if a == nil {
@@ -47,26 +34,30 @@ func toAddresses(in []*mail.Address) []fmail.Address {
 	return out
 }
 
-func toConvAddresses(in []proton.ConversationAddress) []fmail.Address {
+func toAPIAddress(a protonapi.Address) fmail.Address {
+	return fmail.Address{
+		Name:          a.Name,
+		Address:       a.Address,
+		IsProton:      bool(a.IsProton),
+		IsSimpleLogin: bool(a.IsSimpleLogin),
+	}
+}
+
+func toAPIAddresses(in []protonapi.Address) []fmail.Address {
 	if len(in) == 0 {
 		return nil
 	}
 
 	out := make([]fmail.Address, 0, len(in))
 	for _, a := range in {
-		out = append(out, fmail.Address{
-			Name:          a.Name,
-			Address:       a.Address,
-			IsProton:      bool(a.IsProton),
-			IsSimpleLogin: bool(a.IsSimpleLogin),
-		})
+		out = append(out, toAPIAddress(a))
 	}
 
 	return out
 }
 
 func toBoxKind(t proton.LabelType, id string) fmail.BoxKind {
-	if proton.IsCategoryLabel(id) {
+	if protonapi.IsCategoryLabel(id) {
 		return fmail.BoxCategory
 	}
 
@@ -91,13 +82,13 @@ func toBox(l proton.Label) fmail.Box {
 }
 
 // categoryBoxes synthesises Box entries for Proton's categories. They are real
-// labels with real counts, but /core/v4/labels never returns them, so without
-// this they would be invisible.
+// labels with real counts, but /core/v4/labels rejects any Type outside 1-4,
+// so without this they would be invisible.
 func categoryBoxes() []fmail.Box {
-	out := make([]fmail.Box, 0, len(proton.CategoryLabels))
+	out := make([]fmail.Box, 0, len(protonapi.CategoryLabels))
 
-	for _, id := range proton.CategoryLabels {
-		name := categoryNames[id]
+	for _, id := range protonapi.CategoryLabels {
+		name := protonapi.CategoryNames[id]
 		if name == "" {
 			name = "Category " + id
 		}
@@ -113,7 +104,7 @@ func categoryBoxes() []fmail.Box {
 	return out
 }
 
-func toConversation(c proton.Conversation) fmail.Conversation {
+func toConversation(c protonapi.Conversation) fmail.Conversation {
 	// Prefer the label-scoped rollups: they describe the thread as it appears
 	// in the box being listed, which is what the caller asked for.
 	num, unread, atts := c.NumMessages, c.NumUnread, c.NumAttachments
@@ -127,8 +118,8 @@ func toConversation(c proton.Conversation) fmail.Conversation {
 	return fmail.Conversation{
 		ID:             c.ID,
 		Subject:        c.Subject,
-		Senders:        toConvAddresses(c.Senders),
-		Recipients:     toConvAddresses(c.Recipients),
+		Senders:        toAPIAddresses(c.Senders),
+		Recipients:     toAPIAddresses(c.Recipients),
 		NumMessages:    num,
 		NumUnread:      unread,
 		NumAttachments: atts,
@@ -140,19 +131,17 @@ func toConversation(c proton.Conversation) fmail.Conversation {
 	}
 }
 
-func toMessage(m proton.MessageMetadata) fmail.Message {
+func toMessage(m protonapi.Message) fmail.Message {
 	msg := fmail.Message{
 		ID:             m.ID,
 		ConversationID: m.ConversationID,
 		Subject:        m.Subject,
-		From:           toAddress(m.Sender),
-		To:             toAddresses(m.ToList),
-		CC:             toAddresses(m.CCList),
-		BCC:            toAddresses(m.BCCList),
-		ReplyTo:        toAddresses(m.ReplyTos),
+		To:             toAPIAddresses(m.ToList),
+		CC:             toAPIAddresses(m.CCList),
+		BCC:            toAPIAddresses(m.BCCList),
 		Time:           time.Unix(m.Time, 0),
-		Size:           int64(m.Size),
-		Unread:         !m.Seen(),
+		Size:           m.Size,
+		Unread:         bool(m.Unread),
 		BoxIDs:         m.LabelIDs,
 		CategoryID:     m.CategoryID,
 		NumAttachments: m.NumAttachments,
@@ -160,6 +149,18 @@ func toMessage(m proton.MessageMetadata) fmail.Message {
 		IsDraft:        m.IsDraft(),
 		ExternalID:     m.ExternalID,
 		Order:          m.Order,
+	}
+
+	if m.Sender != nil {
+		msg.From = toAPIAddress(*m.Sender)
+	}
+
+	// Provenance arrives on the message, not on the sender address.
+	msg.From.IsProton = msg.From.IsProton || bool(m.IsProton)
+	msg.From.IsSimpleLogin = msg.From.IsSimpleLogin || bool(m.IsSimpleLogin)
+
+	if m.ReplyTo != nil {
+		msg.ReplyTo = []fmail.Address{toAPIAddress(*m.ReplyTo)}
 	}
 
 	if m.IsNewsletter() {
@@ -171,14 +172,31 @@ func toMessage(m proton.MessageMetadata) fmail.Message {
 		msg.SnoozedUntil = &t
 	}
 
-	// Sender provenance lives on the message metadata, not on the address.
-	msg.From.IsProton = bool(m.IsProton)
-	msg.From.IsSimpleLogin = bool(m.IsSimpleLogin)
-
 	return msg
 }
 
-func toNewsletter(n proton.NewsletterSubscription) fmail.Newsletter {
+// toUpstreamMessage converts the metadata upstream returns. Used only for
+// drafts, which the conversation endpoints do not cover.
+func toUpstreamMessage(m proton.MessageMetadata) fmail.Message {
+	return fmail.Message{
+		ID:             m.ID,
+		Subject:        m.Subject,
+		From:           toAddress(m.Sender),
+		To:             toAddresses(m.ToList),
+		CC:             toAddresses(m.CCList),
+		BCC:            toAddresses(m.BCCList),
+		ReplyTo:        toAddresses(m.ReplyTos),
+		Time:           time.Unix(m.Time, 0),
+		Size:           int64(m.Size),
+		Unread:         !m.Seen(),
+		BoxIDs:         m.LabelIDs,
+		NumAttachments: m.NumAttachments,
+		IsDraft:        m.IsDraft(),
+		ExternalID:     m.ExternalID,
+	}
+}
+
+func toNewsletter(n protonapi.NewsletterSubscription) fmail.Newsletter {
 	out := fmail.Newsletter{
 		ID:     n.ID,
 		ListID: n.ListID,
@@ -200,7 +218,7 @@ func toNewsletter(n proton.NewsletterSubscription) fmail.Newsletter {
 		MarkAsRead:         n.MarkAsRead,
 	}
 
-	if n.ReceivedMessages.Total == 0 && n.ReceivedMessageCount > 0 {
+	if out.ReceivedTotal == 0 && n.ReceivedMessageCount > 0 {
 		out.ReceivedTotal = n.ReceivedMessageCount
 	}
 
@@ -216,29 +234,13 @@ func toNewsletter(n proton.NewsletterSubscription) fmail.Newsletter {
 	return out
 }
 
-func toChangeKind(a proton.EventAction) fmail.ChangeKind {
+func toChangeKind(a protonapi.EventAction) fmail.ChangeKind {
 	switch a {
-	case proton.EventCreate:
+	case protonapi.EventCreate:
 		return fmail.ChangeCreate
-	case proton.EventDelete:
+	case protonapi.EventDelete:
 		return fmail.ChangeDelete
 	default:
 		return fmail.ChangeUpdate
 	}
-}
-
-// parseReferences splits a References header into individual message IDs.
-func parseReferences(values []string) []string {
-	var out []string
-
-	for _, v := range values {
-		for _, f := range strings.Fields(v) {
-			f = strings.TrimSpace(f)
-			if f != "" {
-				out = append(out, f)
-			}
-		}
-	}
-
-	return out
 }

@@ -8,14 +8,9 @@ go 1.26.1
 // compile.
 replace github.com/go-resty/resty/v2 => github.com/ProtonMail/resty/v2 v2.0.0-20250929142426-e3dc6308c80b
 
-// Our fork adds the conversation, newsletter and category surface that
-// upstream does not model. Points at a local checkout until it is published;
-// see README.md, "Building".
-replace github.com/ProtonMail/go-proton-api => ../go-proton-api
-
 require (
 	github.com/ProtonMail/gluon v0.17.1-0.20260225115619-c0f05c033a4a
-	github.com/ProtonMail/go-proton-api v0.0.0-00010101000000-000000000000
+	github.com/ProtonMail/go-proton-api v0.4.1-0.20260814105758-19be6f972419
 	github.com/ProtonMail/gopenpgp/v2 v2.10.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10

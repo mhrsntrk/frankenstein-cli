@@ -13,6 +13,7 @@ import (
 	"github.com/mhrsntrk/frankenstein-cli/internal/config"
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail/protonmail"
+	"github.com/mhrsntrk/frankenstein-cli/internal/protonapi"
 )
 
 // HumanVerification carries the challenge a caller must present to the user.
@@ -49,10 +50,15 @@ type Credentials struct {
 	HV *HumanVerification
 }
 
-// Client bundles an authenticated Proton client with its unlocked keys.
+// Client bundles an authenticated Proton session with its unlocked keys.
+//
+// Two API clients share the session. go-proton-api does auth, keys, decryption
+// and sending; protonapi does conversations, newsletters and event deltas,
+// which upstream does not model.
 type Client struct {
 	Manager   *proton.Manager
 	Client    *proton.Client
+	API       *protonapi.Client
 	Auth      proton.Auth
 	UserKR    *crypto.KeyRing
 	AddrKRs   map[string]*crypto.KeyRing
@@ -62,9 +68,9 @@ type Client struct {
 	SaltedKeyPass []byte
 }
 
-// Provider wraps the client as a mail.Provider.
+// Provider wraps the session as a mail.Provider.
 func (c *Client) Provider() mail.Provider {
-	return protonmail.New(c.Manager, c.Client, c.UserKR, c.AddrKRs, c.Addresses, true)
+	return protonmail.New(c.Manager, c.Client, c.API, c.UserKR, c.AddrKRs, c.Addresses, true)
 }
 
 // Session converts the client into a persistable session.
@@ -159,7 +165,7 @@ func Login(ctx context.Context, cfg config.Config, creds Credentials) (*Client, 
 		mboxPass = creds.Password
 	}
 
-	cl, err := unlock(ctx, m, c, auth, mboxPass)
+	cl, err := unlock(ctx, cfg, m, c, auth, mboxPass)
 	if err != nil {
 		c.Close()
 		m.Close()
@@ -222,6 +228,7 @@ func Resume(ctx context.Context, cfg config.Config, sess Session) (*Client, erro
 	return &Client{
 		Manager:       m,
 		Client:        c,
+		API:           protonapi.New(cfg.APIHost, cfg.AppVersion, auth.UID, auth.AccessToken),
 		Auth:          auth,
 		UserKR:        userKR,
 		AddrKRs:       addrKRs,
@@ -232,7 +239,7 @@ func Resume(ctx context.Context, cfg config.Config, sess Session) (*Client, erro
 }
 
 // unlock derives the salted key passphrase and opens the key rings.
-func unlock(ctx context.Context, m *proton.Manager, c *proton.Client, auth proton.Auth, mboxPass []byte) (*Client, error) {
+func unlock(ctx context.Context, cfg config.Config, m *proton.Manager, c *proton.Client, auth proton.Auth, mboxPass []byte) (*Client, error) {
 	user, err := c.GetUser(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get user: %w", err)
@@ -269,6 +276,7 @@ func unlock(ctx context.Context, m *proton.Manager, c *proton.Client, auth proto
 	return &Client{
 		Manager:       m,
 		Client:        c,
+		API:           protonapi.New(cfg.APIHost, cfg.AppVersion, auth.UID, auth.AccessToken),
 		Auth:          auth,
 		UserKR:        userKR,
 		AddrKRs:       addrKRs,
@@ -329,6 +337,13 @@ func annotateAppVersion(err error) error {
 func (c *Client) OnSessionChange(fn func(Session)) {
 	c.Client.AddAuthHandler(func(a proton.Auth) {
 		c.Auth = a
+
+		// The second client carries the same session, so it has to learn the
+		// new token too or it starts 401ing after the first rotation.
+		if c.API != nil {
+			c.API.SetAuth(a.UID, a.AccessToken)
+		}
+
 		fn(c.Session())
 	})
 }

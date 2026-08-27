@@ -17,12 +17,21 @@ import (
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
 
 	fmail "github.com/mhrsntrk/frankenstein-cli/internal/mail"
+	"github.com/mhrsntrk/frankenstein-cli/internal/protonapi"
 )
 
 // Provider is a Proton-backed mail.Provider.
+//
+// It uses two clients against one session. go-proton-api handles auth, keys,
+// decryption, drafts and sending. internal/protonapi handles conversations,
+// newsletters and the event deltas, which upstream does not model and cannot
+// be added to from outside because its request methods are unexported.
 type Provider struct {
 	client  *proton.Client
 	manager *proton.Manager
+
+	// api covers the endpoints upstream leaves out.
+	api *protonapi.Client
 
 	// addrKRs maps address ID to its unlocked key ring. Decryption picks the
 	// ring by the message's AddressID.
@@ -36,10 +45,11 @@ type Provider struct {
 }
 
 // New wraps an authenticated client and its unlocked key rings.
-func New(m *proton.Manager, c *proton.Client, userKR *crypto.KeyRing, addrKRs map[string]*crypto.KeyRing, addresses []proton.Address, ownsManager bool) *Provider {
+func New(m *proton.Manager, c *proton.Client, api *protonapi.Client, userKR *crypto.KeyRing, addrKRs map[string]*crypto.KeyRing, addresses []proton.Address, ownsManager bool) *Provider {
 	return &Provider{
 		client:       c,
 		manager:      m,
+		api:          api,
 		userKR:       userKR,
 		addrKRs:      addrKRs,
 		addresses:    addresses,
@@ -98,7 +108,7 @@ func (p *Provider) Boxes(ctx context.Context) ([]fmail.Box, error) {
 		return nil, fmt.Errorf("get labels: %w", err)
 	}
 
-	boxes := make([]fmail.Box, 0, len(labels)+len(proton.CategoryLabels))
+	boxes := make([]fmail.Box, 0, len(labels)+len(protonapi.CategoryLabels))
 	seen := make(map[string]bool, len(labels))
 
 	for _, l := range labels {
@@ -114,12 +124,12 @@ func (p *Provider) Boxes(ctx context.Context) ([]fmail.Box, error) {
 	}
 
 	// One request fills in the counts for every box at once.
-	counts, err := p.client.GetConversationCounts(ctx)
+	counts, err := p.api.ConversationCounts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get conversation counts: %w", err)
 	}
 
-	byID := make(map[string]proton.ConversationCount, len(counts))
+	byID := make(map[string]protonapi.Count, len(counts))
 	for _, c := range counts {
 		byID[c.LabelID] = c
 	}
@@ -164,7 +174,7 @@ func systemOrder(id string) int {
 	order := []string{
 		proton.InboxLabel,
 		proton.StarredLabel,
-		proton.SnoozedLabel,
+		protonapi.SnoozedLabel,
 		proton.DraftsLabel,
 		proton.SentLabel,
 		proton.ArchiveLabel,
@@ -187,10 +197,10 @@ func (p *Provider) Conversations(ctx context.Context, opts fmail.ListOptions) ([
 		opts.Limit = 50
 	}
 
-	filter := proton.ConversationFilter{
+	filter := protonapi.ConversationFilter{
 		LabelID: opts.BoxID,
 		Subject: opts.Search,
-		Desc:    proton.Bool(true),
+		Desc:    true,
 	}
 
 	if opts.BoxID == "" {
@@ -208,7 +218,7 @@ func (p *Provider) Conversations(ctx context.Context, opts fmail.ListOptions) ([
 		page = opts.Offset / pageSize
 	}
 
-	convs, err := p.client.GetConversationsPage(ctx, page, pageSize, filter)
+	convs, err := p.api.Conversations(ctx, page, pageSize, filter)
 	if err != nil {
 		return nil, fmt.Errorf("get conversations: %w", err)
 	}
@@ -228,7 +238,7 @@ func (p *Provider) Conversations(ctx context.Context, opts fmail.ListOptions) ([
 }
 
 func (p *Provider) Thread(ctx context.Context, conversationID string) (fmail.Thread, error) {
-	conv, msgs, err := p.client.GetConversation(ctx, conversationID)
+	conv, msgs, err := p.api.Conversation(ctx, conversationID)
 	if err != nil {
 		return fmail.Thread{}, fmt.Errorf("get conversation %s: %w", conversationID, err)
 	}
@@ -334,7 +344,7 @@ func (p *Provider) Label(ctx context.Context, conversationIDs []string, boxID st
 		return nil
 	}
 
-	return p.client.LabelConversations(ctx, conversationIDs, boxID)
+	return p.api.LabelConversations(ctx, conversationIDs, boxID)
 }
 
 func (p *Provider) Unlabel(ctx context.Context, conversationIDs []string, boxID string) error {
@@ -342,7 +352,7 @@ func (p *Provider) Unlabel(ctx context.Context, conversationIDs []string, boxID 
 		return nil
 	}
 
-	return p.client.UnlabelConversations(ctx, conversationIDs, boxID)
+	return p.api.UnlabelConversations(ctx, conversationIDs, boxID)
 }
 
 func (p *Provider) CreateBox(ctx context.Context, name string, kind fmail.BoxKind, color string) (fmail.Box, error) {
@@ -372,7 +382,7 @@ func (p *Provider) MarkRead(ctx context.Context, conversationIDs []string) error
 		return nil
 	}
 
-	return p.client.MarkConversationsRead(ctx, conversationIDs...)
+	return p.api.MarkConversationsRead(ctx, conversationIDs)
 }
 
 func (p *Provider) MarkUnread(ctx context.Context, conversationIDs []string, boxID string) error {
@@ -381,10 +391,10 @@ func (p *Provider) MarkUnread(ctx context.Context, conversationIDs []string, box
 	}
 
 	if boxID == "" {
-		boxID = proton.InboxLabel
+		boxID = protonapi.InboxLabel
 	}
 
-	return p.client.MarkConversationsUnread(ctx, conversationIDs, boxID)
+	return p.api.MarkConversationsUnread(ctx, conversationIDs, boxID)
 }
 
 func (p *Provider) Draft(ctx context.Context, d fmail.Draft) (fmail.Draft, error) {
@@ -448,15 +458,15 @@ func (p *Provider) Drafts(ctx context.Context) ([]fmail.Message, error) {
 
 	out := make([]fmail.Message, 0, len(meta))
 	for _, m := range meta {
-		out = append(out, toMessage(m))
+		out = append(out, toUpstreamMessage(m))
 	}
 
 	return out, nil
 }
 
 func (p *Provider) Newsletters(ctx context.Context) ([]fmail.Newsletter, error) {
-	subs, err := p.client.GetNewsletterSubscriptions(ctx, proton.NewsletterSubscriptionFilter{
-		Sort: proton.NewsletterSortRecentlyReceived,
+	subs, err := p.api.NewsletterSubscriptions(ctx, protonapi.NewsletterFilter{
+		Sort: protonapi.NewsletterSortRecentlyReceived,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("get newsletter subscriptions: %w", err)
@@ -471,7 +481,7 @@ func (p *Provider) Newsletters(ctx context.Context) ([]fmail.Newsletter, error) 
 }
 
 func (p *Provider) RouteNewsletter(ctx context.Context, newsletterID, moveToBoxID string, markAsRead bool) error {
-	req := proton.UpdateNewsletterSubscriptionReq{
+	req := protonapi.UpdateNewsletterSubscriptionReq{
 		MarkAsRead: &markAsRead,
 	}
 
@@ -479,7 +489,7 @@ func (p *Provider) RouteNewsletter(ctx context.Context, newsletterID, moveToBoxI
 		req.MoveToFolder = &moveToBoxID
 	}
 
-	if _, err := p.client.UpdateNewsletterSubscription(ctx, newsletterID, req); err != nil {
+	if _, err := p.api.UpdateNewsletterSubscription(ctx, newsletterID, req); err != nil {
 		return fmt.Errorf("route newsletter %s: %w", newsletterID, err)
 	}
 
@@ -487,7 +497,7 @@ func (p *Provider) RouteNewsletter(ctx context.Context, newsletterID, moveToBoxI
 }
 
 func (p *Provider) Cursor(ctx context.Context) (string, error) {
-	id, err := p.client.GetLatestEventID(ctx)
+	id, err := p.api.LatestEventID(ctx)
 	if err != nil {
 		return "", fmt.Errorf("get latest event id: %w", err)
 	}
@@ -505,7 +515,7 @@ func (p *Provider) Poll(ctx context.Context, cursor string) (fmail.Delta, error)
 		return fmail.Delta{Cursor: id, Resync: true}, nil
 	}
 
-	events, _, err := p.client.GetEvent(ctx, cursor)
+	events, err := p.api.Events(ctx, cursor)
 	if err != nil {
 		return fmail.Delta{}, fmt.Errorf("get event: %w", err)
 	}
@@ -541,7 +551,12 @@ func (p *Provider) Poll(ctx context.Context, cursor string) (fmail.Delta, error)
 			out.Boxes = append(out.Boxes, fmail.BoxChange{
 				Kind: toChangeKind(le.Action),
 				ID:   le.ID,
-				Box:  toBox(le.Label),
+				Box: fmail.Box{
+					ID:    le.Label.ID,
+					Name:  le.Label.Name,
+					Kind:  toBoxKind(proton.LabelType(le.Label.Type), le.Label.ID),
+					Color: le.Label.Color,
+				},
 			})
 		}
 	}
@@ -619,7 +634,7 @@ func (p *Provider) Send(ctx context.Context, draftID string) (fmail.Message, err
 		return fmail.Message{}, fmt.Errorf("send draft %s: %w", draftID, err)
 	}
 
-	return toMessage(sent.MessageMetadata), nil
+	return toUpstreamMessage(sent.MessageMetadata), nil
 }
 
 // addressByID finds one of the account's own addresses.

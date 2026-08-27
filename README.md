@@ -25,11 +25,19 @@ Proton's own server-side rules, which keep working with this tool shut down.
 
 ## Status
 
-Working and tested, but young. The mail, screener, calendar and local domains
-are all implemented; the test suite covers the cache, the sync loop, the
-screener and the rendering. It has been run against a real Proton account, so
-the auth and sync paths are proven, but it has not been through months of daily
-use. Treat it as something to try rather than something to rely on.
+Young. The mail, screener, calendar and local domains are all implemented, and
+the test suite covers the cache, the sync loop, the screener, the API decoding
+and the rendering.
+
+Be aware of what has and has not been exercised against a live account. The
+authentication path -- SRP, two-factor, human verification, key unlocking,
+decryption -- was proven against a real Proton mailbox. The `internal/protonapi`
+client was written from responses captured from that same mailbox and its
+decoding is tested against them, but the client itself has not yet made a live
+request. Two write paths are inferred rather than verified: updating a
+newsletter subscription and unsubscribing, which `screener route` depends on.
+
+Treat it as something to try rather than something to rely on.
 
 ## Install
 
@@ -43,17 +51,6 @@ make build
 ./frankenstein sync
 ./frankenstein tui
 ```
-
-### Building
-
-Until the API fork is published, `go.mod` points at a sibling checkout:
-
-```sh
-git clone https://github.com/ProtonMail/go-proton-api ../go-proton-api
-```
-
-and the `replace` directive resolves it. See "The fork" below for what that
-fork adds.
 
 ## Use
 
@@ -111,28 +108,43 @@ than going through Bridge and IMAP.
 command layer imports a Proton or Google type; a second backend is a matter of
 implementing `mail.Provider`.
 
-## The fork
+## Talking to Proton
 
-This depends on a fork of `ProtonMail/go-proton-api` that adds what upstream
-does not model. Upstream exists to serve Bridge, which flattens everything down
-to IMAP, so the thread-level surface was never needed there.
+Two API clients share one session.
 
-The fork adds, all verified against the live API:
+`ProtonMail/go-proton-api` is used unmodified, as a normal dependency, for
+authentication, human verification, key unlocking, decryption, attachments,
+labels, drafts and sending.
 
-- **Conversations** (`/mail/v4/conversations`) with the per-label `Context*`
-  rollups a list view needs
-- **Newsletter subscriptions** with engagement counts, tracker counts,
-  unsubscribe methods, and the server-side `MoveToFolder` / `MarkAsRead` rules
-- The fields `MessageMetadata` silently discards: `ConversationID`,
+`internal/protonapi` is a small client of our own for the seven endpoints
+upstream does not model. Upstream exists to serve Proton Bridge, which flattens
+everything down to IMAP, and IMAP has no thread primitive, so the conversation
+surface was never needed there. Its request methods are unexported, so those
+endpoints cannot be added from outside the package. But the authenticated
+session hands back a UID and an access token, which is all they need, so this
+is roughly 700 lines alongside upstream rather than a fork of it.
+
+What it covers, all verified against the live API:
+
+- **Conversations**: list, one thread with its messages, per-label counts, and
+  the label / unlabel / read / unread actions. The per-label `Context*` rollups
+  are what a mailbox list view actually needs.
+- **Newsletter subscriptions**: engagement counts, tracker counts, unsubscribe
+  methods, and the server-side `MoveToFolder` / `MarkAsRead` rules.
+- **Event deltas**, including the `Conversations` array upstream drops, so
+  thread sync needs no extra polling.
+- The message fields upstream's struct discards: `ConversationID`,
   `CategoryID`, `NewsletterSubscriptionID`, `Order`, `IsProton`,
-  `IsSimpleLogin`, `SpamScore`, `SnoozeTime`
-- `Conversations`, `ContactEmails` and `ProductUsedSpace` on `Event`
+  `IsSimpleLogin`, `SpamScore`, `SnoozeTime`. Fetching a thread returns its
+  messages, so no separate `/mail/v4/messages` call is needed.
 - Label constants 15 (All Mail excluding Spam and Trash), 16 (Snoozed) and the
-  category labels 20 to 26
+  category labels 20 to 26, which `/core/v4/labels` never returns.
 
-Both the fork and this project are MIT.
+The two clients share a token, and Proton rotates the refresh token on every
+use, so the upstream client's auth handler pushes each new token into ours.
+Without that, the second client starts returning 401 after the first rotation.
 
-One gotcha if you vendor go-proton-api yourself: it carries a `replace`
+One gotcha if you depend on go-proton-api yourself: it carries a `replace`
 pointing at a Proton fork of resty, and Go ignores `replace` directives from
 dependency modules. Copy it into your own `go.mod` or the upstream package will
 not compile.

@@ -11,17 +11,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # go.mod replaces go-proton-api with a sibling checkout, so CI has to
-      # place the fork where the replace directive expects it.
-      - name: Check out the API fork
-        uses: actions/checkout@v4
-        with:
-          repository: ProtonMail/go-proton-api
-          path: go-proton-api-upstream
-
-      - name: Position the fork
-        run: mv go-proton-api-upstream ../go-proton-api
-
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
