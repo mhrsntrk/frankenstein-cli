@@ -465,9 +465,7 @@ func (p *Provider) Drafts(ctx context.Context) ([]fmail.Message, error) {
 }
 
 func (p *Provider) Newsletters(ctx context.Context) ([]fmail.Newsletter, error) {
-	subs, err := p.api.NewsletterSubscriptions(ctx, protonapi.NewsletterFilter{
-		Sort: protonapi.NewsletterSortRecentlyReceived,
-	})
+	subs, err := p.api.NewsletterSubscriptions(ctx, protonapi.NewsletterFilter{})
 	if err != nil {
 		return nil, fmt.Errorf("get newsletter subscriptions: %w", err)
 	}
@@ -476,6 +474,11 @@ func (p *Provider) Newsletters(ctx context.Context) ([]fmail.Newsletter, error) 
 	for _, s := range subs {
 		out = append(out, toNewsletter(s))
 	}
+
+	// The endpoint has no usable sort parameter, so order here.
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].LastReceived.After(out[j].LastReceived)
+	})
 
 	return out, nil
 }

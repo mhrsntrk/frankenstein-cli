@@ -119,34 +119,18 @@ func (a *App) Provider(ctx context.Context) (mail.Provider, error) {
 		return nil, err
 	}
 
-	sess, err := sessions.Load()
+	// Resume loads the session and writes the rotated token back itself.
+	client, err := auth.Resume(ctx, cfg, sessions)
 	if errors.Is(err, auth.ErrNoSession) {
 		return nil, ErrNotLoggedIn
 	}
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w\n\nThe stored session is no longer valid. Run `frankenstein login`", err)
 	}
-
-	client, err := auth.Resume(ctx, cfg, sess)
-	if err != nil {
-		return nil, fmt.Errorf("%w (session may have expired; run `frankenstein login`)", err)
-	}
-
-	// Proton rotates the refresh token on every use, so persist each rotation
-	// or the stored session becomes a dead credential.
-	client.OnSessionChange(func(s auth.Session) {
-		if err := sessions.Save(s); err != nil {
-			fmt.Fprintf(a.Err, "warning: could not persist refreshed session: %v\n", err)
-		}
-	})
 
 	a.client = client
 	a.provider = client.Provider()
-
-	if err := sessions.Save(client.Session()); err != nil {
-		fmt.Fprintf(a.Err, "warning: could not persist session: %v\n", err)
-	}
 
 	return a.provider, nil
 }

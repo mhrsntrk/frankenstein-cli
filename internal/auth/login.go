@@ -98,8 +98,20 @@ func newManager(cfg config.Config) (*proton.Manager, error) {
 		proton.WithHostURL(cfg.APIHost),
 		proton.WithAppVersion(cfg.AppVersion),
 		proton.WithCookieJar(jar),
+		// The library logs failed requests to stderr by default, which puts
+		// raw RESTY lines in front of a user who should be reading our own
+		// error message instead. Errors still surface through the returned
+		// error; this only silences the duplicate.
+		proton.WithLogger(quietLogger{}),
 	), nil
 }
+
+// quietLogger discards the library's own request logging.
+type quietLogger struct{}
+
+func (quietLogger) Errorf(string, ...any) {}
+func (quietLogger) Warnf(string, ...any)  {}
+func (quietLogger) Debugf(string, ...any) {}
 
 // Login performs a full SRP login, handling human verification and 2FA, and
 // unlocks the account's keys.
@@ -176,8 +188,18 @@ func Login(ctx context.Context, cfg config.Config, creds Credentials) (*Client, 
 	return cl, nil
 }
 
-// Resume rebuilds a client from a stored session, skipping captcha and 2FA.
-func Resume(ctx context.Context, cfg config.Config, sess Session) (*Client, error) {
+// Resume rebuilds a client from the stored session, skipping captcha and 2FA.
+//
+// It takes the Store rather than a Session on purpose. Proton invalidates a
+// refresh token the moment it is exchanged, so a resume that does not write
+// the new token back leaves a dead credential behind and the next run has to
+// log in from scratch. Making the store mandatory removes the chance to forget.
+func Resume(ctx context.Context, cfg config.Config, store *Store) (*Client, error) {
+	sess, err := store.Load()
+	if err != nil {
+		return nil, err
+	}
+
 	if !sess.Valid() {
 		return nil, ErrNoSession
 	}
@@ -190,6 +212,11 @@ func Resume(ctx context.Context, cfg config.Config, sess Session) (*Client, erro
 	c, auth, err := m.NewClientWithRefresh(ctx, sess.UID, sess.RefreshToken)
 	if err != nil {
 		m.Close()
+
+		// The old token is spent whether or not the exchange succeeded, so a
+		// failure here means the stored session is dead. Clear it rather than
+		// leaving the user to re-run a command that cannot work.
+		_ = store.Clear()
 
 		return nil, fmt.Errorf("resume session: %w", err)
 	}
@@ -225,7 +252,7 @@ func Resume(ctx context.Context, cfg config.Config, sess Session) (*Client, erro
 		return nil, fmt.Errorf("unlock keys: %w", err)
 	}
 
-	return &Client{
+	client := &Client{
 		Manager:       m,
 		Client:        c,
 		API:           protonapi.New(cfg.APIHost, cfg.AppVersion, auth.UID, auth.AccessToken),
@@ -235,7 +262,16 @@ func Resume(ctx context.Context, cfg config.Config, sess Session) (*Client, erro
 		Addresses:     addrs,
 		User:          user,
 		SaltedKeyPass: sess.SaltedKeyPass,
-	}, nil
+	}
+
+	// Persist the rotated token immediately, then on every later rotation.
+	if err := store.Save(client.Session()); err != nil {
+		return nil, fmt.Errorf("persist refreshed session: %w", err)
+	}
+
+	client.OnSessionChange(func(s Session) { _ = store.Save(s) })
+
+	return client, nil
 }
 
 // unlock derives the salted key passphrase and opens the key rings.

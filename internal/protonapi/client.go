@@ -296,22 +296,16 @@ func (c *Client) Events(ctx context.Context, cursor string) ([]Event, error) {
 }
 
 // NewsletterFilter selects which subscriptions to list.
+//
+// There is deliberately no Sort field. The endpoint rejects a Sort parameter
+// with 400 Code 2001 in every spelling tried against the live API, so ordering
+// is done by the caller after the fact. PageSize and Active are accepted.
 type NewsletterFilter struct {
 	// Active restricts to lists not yet unsubscribed from.
 	Active *bool
 
 	SearchTerm string
-
-	// Sort is one of the NewsletterSort* constants.
-	Sort string
 }
-
-const (
-	NewsletterSortRecentlyReceived = "-last_received_time"
-	NewsletterSortRecentlyRead     = "-last_read_time"
-	NewsletterSortAlphabetical     = "name"
-	NewsletterSortMostRead         = "-received_message_count"
-)
 
 // NewsletterSubscriptions walks every page and returns all mailing lists.
 func (c *Client) NewsletterSubscriptions(ctx context.Context, filter NewsletterFilter) ([]NewsletterSubscription, error) {
@@ -338,10 +332,6 @@ func (c *Client) NewsletterSubscriptions(ctx context.Context, filter NewsletterF
 
 		if filter.SearchTerm != "" {
 			q.Set("SearchTerm", filter.SearchTerm)
-		}
-
-		if filter.Sort != "" {
-			q.Set("Sort", filter.Sort)
 		}
 
 		var res struct {
