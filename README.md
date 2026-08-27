@@ -167,6 +167,14 @@ acceptable risk for its author; decide for yourself.
 for you to solve it in a browser, and continues. Bridge does the same thing.
 The session is then stored in your system keyring, so this happens once.
 
+## Notes
+
+`docs/proton-api-findings.md` is the record of what Proton's API actually
+returns, gathered before this client was written: which `x-pm-appversion`
+identifiers the API accepts and rejects, the category label IDs and their
+counts, the fields `go-proton-api` drops, and the human-verification flow. Read
+it before touching `internal/protonapi`.
+
 ## Credit
 
 The command tree, the Bubble Tea navigation model, the `--json` everywhere
