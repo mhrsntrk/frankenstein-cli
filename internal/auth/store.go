@@ -128,5 +128,16 @@ func (s *Store) Clear() error {
 	return nil
 }
 
-// FallbackPath is where credentials land when no keyring is available.
-func (s *Store) FallbackPath() string { return s.fallbackPath }
+// Location describes where the session is stored, which is the first thing
+// anyone asks when a login does not stick.
+func (s *Store) Location() string {
+	if _, err := keyring.Get(keyringService, keyringUser); err == nil {
+		return "system keyring"
+	}
+
+	if _, err := os.Stat(s.fallbackPath); err == nil {
+		return s.fallbackPath
+	}
+
+	return "not stored"
+}

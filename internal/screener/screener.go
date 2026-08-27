@@ -428,6 +428,11 @@ func (s *Screener) Decide(ctx context.Context, address string, d Decision) (int,
 }
 
 // applyToSender relabels every cached conversation from an address.
+//
+// Conversations are matched directly as well as through messages: the cache is
+// warm, not a mirror, so message rows exist only for threads that have been
+// opened. Matching on messages alone would silently label nothing on a freshly
+// synced mailbox.
 func (s *Screener) applyToSender(ctx context.Context, address string, d Decision) (int, error) {
 	boxID := s.BoxIDFor(d)
 	if boxID == "" {
@@ -435,9 +440,17 @@ func (s *Screener) applyToSender(ctx context.Context, address string, d Decision
 	}
 
 	rows, err := s.store.DB().QueryContext(ctx, `
-		SELECT DISTINCT conversation_id FROM messages
-		WHERE lower(json_extract(from_addr, '$.address')) = ?
-		  AND conversation_id <> ''`, address)
+		SELECT DISTINCT id FROM (
+			SELECT id FROM conversations
+			WHERE lower(json_extract(senders, '$[0].address')) = ?
+
+			UNION
+
+			SELECT conversation_id AS id FROM messages
+			WHERE lower(json_extract(from_addr, '$.address')) = ?
+			  AND conversation_id <> ''
+		)
+		WHERE id IS NOT NULL AND id <> ''`, address, address)
 	if err != nil {
 		return 0, fmt.Errorf("find conversations for %s: %w", address, err)
 	}

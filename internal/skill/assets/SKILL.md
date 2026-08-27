@@ -22,6 +22,15 @@ themselves. It is interactive: it prompts for a password, may need a
 two-factor code, and Proton often demands a CAPTCHA solved in a browser. Do
 not try to drive it. Tell the user to run it and stop.
 
+## The interactive client
+
+If the user wants to work through their mail themselves rather than have you do
+it, tell them to run `frankenstein tui` and press `?`. It has compose, reply,
+forward, screening, archive, trash, move and bulk selection. Do not try to
+drive it: it is a full-screen program and expects a human.
+
+Use the commands below when *you* are doing the work.
+
 ## The mental model
 
 Mail is a **warm cache**, not a live query. `frankenstein sync` fills a local
@@ -78,6 +87,10 @@ frankenstein screener decide <sender> feed --json
 frankenstein screener route --json              # push list rules server-side
 ```
 
+A decision is about the **sender**, not one message: it files everything that
+person has ever sent and everything they send next. Say so when you report a
+decision, because the blast radius surprises people.
+
 Decisions become real Proton labels, so they follow the user to the web and
 mobile apps.
 
@@ -130,3 +143,6 @@ once, which is interactive. Habits, time tracking and the journal are local.
   the user must run `login` themselves.
 - **Do not delete or archive mail** unless asked. There is no undo exposed
   here.
+- **`screener route` writes rules to Proton's servers.** They keep applying
+  with this tool shut down, which is the point, but it means the change
+  outlives the command. Only run it when the user has asked.

@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
-	"github.com/mhrsntrk/frankenstein-cli/internal/config"
+	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
 	"github.com/mhrsntrk/frankenstein-cli/internal/skill"
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui"
 )
@@ -92,18 +92,27 @@ func newTUICmd(app *App) *cobra.Command {
 				return err
 			}
 
-			// The calendar is optional: an unconfigured one just means no
-			// agenda line, not a broken mail client.
-			var cal fcal.Provider
-
-			if p, _, cerr := calendarProvider(ctx, app); cerr == nil {
-				cal = p
+			p, err := app.Provider(ctx)
+			if err != nil {
+				return err
 			}
 
-			return tui.Run(tui.New(st, syncer, cal, cfg.Calendar.CalendarID, cfg.Screener))
+			ps, err := personalStore(app)
+			if err != nil {
+				return err
+			}
+
+			// The calendar is optional: an unconfigured one means no agenda,
+			// not a broken mail client.
+			var cal fcal.Provider
+
+			if c, _, cerr := calendarProvider(ctx, app); cerr == nil {
+				cal = c
+			}
+
+			sc := screener.New(st, p, cfg.Screener)
+
+			return tui.Run(tui.New(st, syncer, p, sc, ps, cal, cfg))
 		},
 	}
 }
-
-// unusedConfig keeps the config import meaningful if the TUI stops needing it.
-var _ = config.AppName

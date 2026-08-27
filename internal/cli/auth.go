@@ -12,6 +12,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/mhrsntrk/frankenstein-cli/internal/auth"
+	gcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar/google"
 )
 
 // stdin is shared so that a fresh reader per prompt cannot swallow buffered
@@ -223,18 +224,26 @@ func newLogoutCmd(app *App) *cobra.Command {
 				return err
 			}
 
+			// Logging out of Proton while leaving the Google token behind would
+			// make "logout" a half-truth.
+			if err := gcal.ClearToken(); err != nil {
+				fmt.Fprintf(app.Err, "warning: could not clear the calendar token: %v\n", err)
+			}
+
 			return app.Emit(map[string]bool{"ok": true}, func(w io.Writer) {
-				fmt.Fprintln(w, "Session forgotten. The cache is untouched; delete it by hand if you want it gone.")
+				fmt.Fprintln(w, "Signed out of Proton and Google.")
+				fmt.Fprintln(w, "The local cache is untouched; delete it by hand if you want it gone.")
 			})
 		},
 	}
 }
 
 type whoami struct {
-	LoggedIn  bool     `json:"logged_in"`
-	Username  string   `json:"username,omitempty"`
-	Addresses []string `json:"addresses,omitempty"`
-	CachePath string   `json:"cache_path,omitempty"`
+	LoggedIn    bool     `json:"logged_in"`
+	Username    string   `json:"username,omitempty"`
+	Addresses   []string `json:"addresses,omitempty"`
+	CachePath   string   `json:"cache_path,omitempty"`
+	Credentials string   `json:"credentials,omitempty"`
 }
 
 func newWhoamiCmd(app *App) *cobra.Command {
@@ -273,6 +282,10 @@ func newWhoamiCmd(app *App) *cobra.Command {
 				out.CachePath = path
 			}
 
+			if s, err := app.Sessions(); err == nil {
+				out.Credentials = s.Location()
+			}
+
 			return app.Emit(out, func(w io.Writer) {
 				fmt.Fprintf(w, "Logged in as %s\n", out.Username)
 
@@ -280,7 +293,8 @@ func newWhoamiCmd(app *App) *cobra.Command {
 					fmt.Fprintf(w, "  %s\n", a)
 				}
 
-				fmt.Fprintf(w, "Cache: %s\n", out.CachePath)
+				fmt.Fprintf(w, "Cache:       %s\n", out.CachePath)
+				fmt.Fprintf(w, "Credentials: %s\n", out.Credentials)
 			})
 		},
 	}

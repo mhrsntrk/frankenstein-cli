@@ -24,6 +24,10 @@ func (m *Model) View() string {
 		return ""
 	}
 
+	if m.help {
+		return m.helpView()
+	}
+
 	var b strings.Builder
 
 	b.WriteString(m.header())
@@ -38,6 +42,16 @@ func (m *Model) View() string {
 		b.WriteString(m.threadView())
 	case viewMessage:
 		b.WriteString(m.messageView())
+	case viewScreener:
+		b.WriteString(m.screenerView())
+	case viewCompose:
+		b.WriteString(m.composeView())
+	case viewCalendar:
+		b.WriteString(m.calendarView())
+	case viewJournal:
+		b.WriteString(m.journalView())
+	case viewMovePicker:
+		b.WriteString(m.movePickerView())
 	}
 
 	b.WriteString("\n")
@@ -46,16 +60,14 @@ func (m *Model) View() string {
 	return b.String()
 }
 
-// header draws the title bar, the box switcher and the screener banner.
-//
-// The box switcher is the part that changes how the client feels: hey-cli
-// keeps every box one keystroke away instead of making you walk back up to a
-// list, and the numbers are always on screen so you never have to remember
-// them.
+// --- chrome -----------------------------------------------------------------
+
 func (m *Model) header() string {
 	var b strings.Builder
 
 	b.WriteString(m.titleBar())
+	b.WriteString("\n")
+	b.WriteString(m.navRow())
 	b.WriteString("\n")
 
 	if m.view == viewBoxes || m.view == viewThreads {
@@ -78,25 +90,33 @@ func (m *Model) header() string {
 	return b.String()
 }
 
-// titleBar is "── name ─────────── account ──" sized exactly to the terminal.
+// titleBar is "── name ─────────── account ──", sized exactly to the terminal.
 //
-// Widths are computed on the plain text and the styling is applied afterwards,
-// because lipgloss padding is invisible to len() and silently pushes the line
-// past the edge.
+// Widths are computed on plain text and styling applied afterwards, because
+// lipgloss padding is invisible to len() and silently overflows the line.
 func (m *Model) titleBar() string {
 	name := "frankenstein"
 
 	switch m.view {
 	case viewThreads:
 		name = m.box.Name
+
+		if n := len(m.selected); n > 0 {
+			name = fmt.Sprintf("%s · %d selected", name, n)
+		}
 	case viewThread, viewMessage:
 		name = m.thread.Conversation.Subject
+	case viewScreener:
+		name = "The Screener"
+	case viewCompose:
+		name = composeTitle(m.compose)
+	case viewCalendar:
+		name = "Calendar"
+	case viewJournal:
+		name = "Journal"
 	}
 
-	width := m.width
-	if width < 24 {
-		width = 24
-	}
+	width := maxInt(24, m.width)
 
 	name = truncateStr(name, maxInt(8, width/2))
 
@@ -108,22 +128,55 @@ func (m *Model) titleBar() string {
 	if m.account != "" {
 		right = " " + m.account + " ──"
 
-		// Drop the account rather than let it wrap on a narrow terminal.
 		if len([]rune(left))+len([]rune(right))+4 > width {
 			right = ""
 		}
 	}
 
-	fill := width - len([]rune(left)) - len([]rune(right))
-	if fill < 0 {
-		fill = 0
-	}
+	fill := maxInt(0, width-len([]rune(left))-len([]rune(right)))
 
 	return dimStyle.Render(lead) + titleStyle.Render(name) +
 		dimStyle.Render(" "+strings.Repeat("─", fill)+right)
 }
 
-// boxBar lists the numbered boxes, marking the one being viewed.
+func composeTitle(c *composeState) string {
+	if c == nil {
+		return "Compose"
+	}
+
+	switch c.kind {
+	case composeReply:
+		return "Reply"
+	case composeReplyAll:
+		return "Reply all"
+	case composeForward:
+		return "Forward"
+	default:
+		return "Compose"
+	}
+}
+
+// navRow is the Mail / Calendar / Journal switcher.
+func (m *Model) navRow() string {
+	var parts []string
+
+	for _, s := range []section{sectionMail, sectionCalendar, sectionJournal} {
+		name := sectionNames[s]
+
+		if s == m.section {
+			parts = append(parts, selectedStyle.Render(" "+name+" "))
+
+			continue
+		}
+
+		parts = append(parts, dimStyle.Render(name))
+	}
+
+	return "  " + strings.Join(parts, "  ")
+}
+
+// boxBar lists the numbered boxes, marking the one being viewed. Keeping every
+// box one keystroke away is what stops navigation feeling like a filesystem.
 func (m *Model) boxBar() string {
 	if len(m.quickBoxes) == 0 {
 		return ""
@@ -132,35 +185,29 @@ func (m *Model) boxBar() string {
 	var parts []string
 
 	for i, b := range m.quickBoxes {
-		label := fmt.Sprintf("%d %s", i+1, b.Name)
-
-		if b.Unread > 0 {
-			label = fmt.Sprintf("%s (%d)", label, b.Unread)
-		}
-
 		if m.view == viewThreads && b.ID == m.box.ID {
-			parts = append(parts, selectedStyle.Render(" "+label+" "))
+			parts = append(parts, selectedStyle.Render(fmt.Sprintf(" %d %s%s ", i+1, b.Name, countSuffix(b.Unread))))
 
 			continue
 		}
 
-		parts = append(parts, keyStyle.Render(fmt.Sprintf("%d", i+1))+" "+b.Name+unreadCount(b.Unread))
+		parts = append(parts,
+			keyStyle.Render(fmt.Sprintf("%d", i+1))+" "+b.Name+dimStyle.Render(countSuffix(b.Unread)))
 	}
 
-	return "  " + strings.Join(parts, dimStyle.Render("  ·  "))
+	return "  " + strings.Join(parts, dimStyle.Render(" · "))
 }
 
-func unreadCount(n int) string {
+func countSuffix(n int) string {
 	if n <= 0 {
 		return ""
 	}
 
-	return dimStyle.Render(fmt.Sprintf(" (%d)", n))
+	return fmt.Sprintf(" (%d)", n)
 }
 
-// screenerBanner is the call to action hey-cli puts front and centre: the
-// screener is the product, so the count of people waiting should never be
-// somewhere you have to go looking for.
+// screenerBanner keeps the count of waiting senders in front of the user. The
+// screener is the product; it should not be somewhere you go looking for.
 func (m *Model) screenerBanner() string {
 	if m.pending == 0 {
 		return ""
@@ -171,15 +218,19 @@ func (m *Model) screenerBanner() string {
 		noun = "sender"
 	}
 
-	text := fmt.Sprintf(" Screen %d first-time %s · frankenstein screener list ", m.pending, noun)
-
-	return "  " + bannerStyle.Render(text)
+	return "  " + bannerStyle.Render(fmt.Sprintf(" Screen %d first-time %s · ctrl+s ", m.pending, noun))
 }
 
 func (m *Model) agendaLine() string {
 	var parts []string
 
+	today := time.Now().Format("2006-01-02")
+
 	for _, e := range m.events {
+		if e.Start.Format("2006-01-02") != today {
+			continue
+		}
+
 		when := e.Start.Format("15:04")
 		if e.AllDay {
 			when = "all day"
@@ -192,31 +243,24 @@ func (m *Model) agendaLine() string {
 		}
 	}
 
+	if len(parts) == 0 {
+		return dimStyle.Render("  today: nothing scheduled")
+	}
+
 	return dimStyle.Render("  today: " + strings.Join(parts, " · "))
 }
 
 func (m *Model) footer() string {
 	if m.filtering {
-		return statusStyle.Render(m.filter.View())
+		return statusStyle.Render(" filter: ") + m.filter.View()
 	}
 
 	if m.err != nil {
-		return errorStyle.Render("  " + truncateStr(m.err.Error(), maxInt(10, m.width-4)))
+		return errorStyle.Render(" " + truncateStr(m.err.Error(), maxInt(10, m.width-2)))
 	}
 
-	var keys string
-
-	switch m.view {
-	case viewBoxes:
-		keys = key("j/k") + " move  " + key("enter") + " open  " + key("1-9") + " box  " +
-			key("r") + " sync  " + key("q") + " quit"
-	case viewThreads:
-		keys = key("j/k") + " move  " + key("enter") + " open  " + key("/") + " filter  " +
-			key("1-9") + " box  " + key("esc") + " back  " + key("q") + " quit"
-	case viewThread:
-		keys = key("j/k") + " move  " + key("enter") + " read  " + key("esc") + " back  " + key("q") + " quit"
-	default:
-		keys = key("j/k") + " scroll  " + key("esc") + " back  " + key("q") + " quit"
+	if m.flash != "" {
+		return okStyle.Render(" "+m.flash) + dimStyle.Render("   ? help")
 	}
 
 	status := m.status
@@ -224,10 +268,35 @@ func (m *Model) footer() string {
 		status = "working…"
 	}
 
-	return statusStyle.Render(status) + "   " + keys
+	return statusStyle.Render(" "+status) + "  " + m.keyHints()
+}
+
+func (m *Model) keyHints() string {
+	switch m.view {
+	case viewThreads:
+		return key("enter") + " open " + key("space") + " select " + key("c") + " compose " +
+			key("i") + "/" + key("d") + "/" + key("p") + " screen " + key("a") + " archive " +
+			key("?") + " help"
+	case viewThread, viewMessage:
+		return key("enter") + " read " + key("r") + " reply " + key("f") + " forward " +
+			key("a") + " archive " + key("esc") + " back " + key("?") + " help"
+	case viewScreener:
+		return key("i") + " imbox " + key("d") + " feed " + key("p") + " paper trail " +
+			key("x") + " screen out " + key("esc") + " back"
+	case viewCompose:
+		return key("tab") + " field " + key("ctrl+d") + " send " + key("ctrl+s") + " save draft " +
+			key("esc") + " discard"
+	case viewMovePicker:
+		return key("↑↓") + " choose " + key("enter") + " move " + key("esc") + " cancel"
+	default:
+		return key("enter") + " open " + key("tab") + " section " + key("r") + " sync " +
+			key("?") + " help " + key("q") + " quit"
+	}
 }
 
 func key(k string) string { return keyStyle.Render(k) }
+
+// --- mail views -------------------------------------------------------------
 
 func (m *Model) boxesView() string {
 	if len(m.boxes) == 0 {
@@ -263,14 +332,14 @@ func (m *Model) boxesView() string {
 	return b.String()
 }
 
-// threadsView draws the thread list, split into unread and read the way
-// hey-cli splits "New for You" from "Previously Seen".
+// threadsView splits unread from read the way hey-cli splits "New for You"
+// from "Previously Seen".
 //
-// There is no preview snippet. Proton's conversation metadata carries no
-// excerpt, so a snippet would mean decrypting a body per visible row: slow,
-// and against the rule that nothing in the render path touches the network.
+// There is no preview snippet: Proton's conversation metadata carries no
+// excerpt, so showing one would mean decrypting a body per visible row, which
+// is slow and breaks the rule that the render path never touches the network.
 func (m *Model) threadsView() string {
-	if m.loading {
+	if m.loading && len(m.convs) == 0 {
 		return dimStyle.Render("  loading…")
 	}
 
@@ -280,9 +349,6 @@ func (m *Model) threadsView() string {
 
 	var b strings.Builder
 
-	end := minInt(m.convFirst+m.pageSize(), len(m.convs))
-
-	// Section headings are only meaningful if the boundary is on screen.
 	firstRead := -1
 
 	for i, c := range m.convs {
@@ -295,7 +361,7 @@ func (m *Model) threadsView() string {
 
 	rows := 0
 
-	for i := m.convFirst; i < end && rows < m.pageSize(); i++ {
+	for i := m.convFirst; i < len(m.convs) && rows < m.pageSize(); i++ {
 		c := m.convs[i]
 
 		if i == 0 && c.Unread() {
@@ -319,45 +385,40 @@ func (m *Model) threadsView() string {
 	return b.String()
 }
 
-// threadRow is one line: unread marker, sender, subject, right-aligned date.
-func (m *Model) threadRow(c mail.Conversation, selected bool) string {
+func (m *Model) threadRow(c mail.Conversation, cursor bool) string {
 	from := "(nobody)"
 	if len(c.Senders) > 0 {
 		from = c.Senders[0].Display()
 	}
 
 	marker := "  "
-	if c.Unread() {
+
+	switch {
+	case m.selected[c.ID]:
+		marker = " +"
+	case c.Unread():
 		marker = " •"
 	}
-
-	when := relTime(c.Time)
 
 	count := ""
 	if c.NumMessages > 1 {
 		count = fmt.Sprintf(" (%d)", c.NumMessages)
 	}
 
-	// Fixed columns: marker(2) + gap + sender(22) + gap + date + padding.
-	senderWidth := 22
-	dateWidth := 10
+	const senderWidth, dateWidth = 22, 10
 
-	subjWidth := m.width - (2 + 1 + senderWidth + 2 + dateWidth + 2)
-	if subjWidth < 10 {
-		subjWidth = 10
-	}
+	subjWidth := maxInt(10, m.width-(2+1+senderWidth+2+dateWidth+2))
 
-	subject := truncateStr(c.Subject+count, subjWidth)
-
-	sender := truncateStr(from, senderWidth)
-
-	body := fmt.Sprintf("%s %-*s  %-*s", marker, senderWidth, sender, subjWidth, subject)
-
-	line := body + "  " + fmt.Sprintf("%*s", dateWidth, when)
+	line := fmt.Sprintf("%s %-*s  %-*s  %*s",
+		marker, senderWidth, truncateStr(from, senderWidth),
+		subjWidth, truncateStr(c.Subject+count, subjWidth),
+		dateWidth, relTime(c.Time))
 
 	switch {
-	case selected:
+	case cursor:
 		return selectedStyle.Render(padTo(line, m.width))
+	case m.selected[c.ID]:
+		return markStyle.Render(line)
 	case c.Unread():
 		return unreadStyle.Render(line)
 	default:
@@ -366,8 +427,8 @@ func (m *Model) threadRow(c mail.Conversation, selected bool) string {
 }
 
 func (m *Model) threadView() string {
-	if m.loading {
-		return dimStyle.Render("  loading...")
+	if m.loading && len(m.thread.Messages) == 0 {
+		return dimStyle.Render("  loading…")
 	}
 
 	if len(m.thread.Messages) == 0 {
@@ -377,9 +438,9 @@ func (m *Model) threadView() string {
 	var b strings.Builder
 
 	for i, msg := range m.thread.Messages {
-		marker := " "
+		marker := "  "
 		if msg.Unread {
-			marker = "•"
+			marker = " •"
 		}
 
 		line := fmt.Sprintf("%s %-16s  %-26s  %s",
@@ -403,8 +464,8 @@ func (m *Model) threadView() string {
 }
 
 func (m *Model) messageView() string {
-	if m.loading {
-		return dimStyle.Render("  loading...")
+	if m.loading && len(m.bodyLines) == 0 {
+		return dimStyle.Render("  loading…")
 	}
 
 	var b strings.Builder
@@ -419,236 +480,255 @@ func (m *Model) messageView() string {
 	return b.String()
 }
 
-// rewrapBody re-flows the decrypted body to the current width. Done once on
-// load and on resize rather than per frame, because the render path has to
-// stay cheap.
-func (m *Model) rewrapBody() {
-	width := m.width - 2
-	if width < 20 {
-		width = 20
+// --- screener ---------------------------------------------------------------
+
+// screenerView is the decision queue: one sender per row. Deciding here is
+// about a person, so it moves everything they have ever sent.
+func (m *Model) screenerView() string {
+	if m.loading && len(m.senders) == 0 {
+		return dimStyle.Render("  loading…")
 	}
 
-	var head []string
+	if len(m.senders) == 0 {
+		return okStyle.Render("  Nobody waiting. The screener is empty.")
+	}
 
-	if len(m.thread.Messages) > m.msgIdx {
-		msg := m.thread.Messages[m.msgIdx]
+	var b strings.Builder
 
-		head = []string{
-			headerStyle.Render("From: ") + msg.From.String(),
-			headerStyle.Render("To:   ") + joinAddrs(msg.To),
-			headerStyle.Render("Date: ") + msg.Time.Format(time.RFC1123),
-			"",
+	b.WriteString(dimStyle.Render("  Decide once per sender. Everything they sent moves with them."))
+	b.WriteString("\n\n")
+
+	visible := maxInt(1, m.pageSize()-2)
+
+	start := clamp(m.senderIdx-visible/2, 0, maxInt(0, len(m.senders)-visible))
+	end := minInt(start+visible, len(m.senders))
+
+	for i := start; i < end; i++ {
+		s := m.senders[i]
+
+		name := s.Address
+		if s.Name != "" {
+			name = fmt.Sprintf("%s <%s>", s.Name, s.Address)
 		}
+
+		tag := ""
+		if s.NewsletterID != "" {
+			tag = "list"
+		}
+
+		line := fmt.Sprintf("  %-46s %5d msg  %-10s  %s",
+			truncateStr(name, 46), s.MessageCount, relTime(s.LastSeen), tag)
+
+		if i == m.senderIdx {
+			line = selectedStyle.Render(padTo(line, m.width))
+		}
+
+		b.WriteString(line)
+		b.WriteString("\n")
 	}
 
-	body := renderBody(m.body)
-
-	var lines []string
-
-	lines = append(lines, head...)
-
-	for _, para := range strings.Split(body, "\n") {
-		lines = append(lines, wrap(para, width)...)
-	}
-
-	m.bodyLines = lines
+	return b.String()
 }
 
-func joinAddrs(in []mail.Address) string {
-	out := make([]string, 0, len(in))
-	for _, a := range in {
-		out = append(out, a.String())
+// --- compose ----------------------------------------------------------------
+
+func (m *Model) composeView() string {
+	c := m.compose
+	if c == nil {
+		return ""
 	}
 
-	return strings.Join(out, ", ")
+	var b strings.Builder
+
+	field := func(label string, i int, rendered string) {
+		marker := "  "
+		if c.field == i {
+			marker = markStyle.Render("> ")
+		}
+
+		b.WriteString(marker + dimStyle.Render(fmt.Sprintf("%-9s", label)) + rendered + "\n")
+	}
+
+	field("To", 0, c.to.View())
+	field("Cc", 1, c.cc.View())
+	field("Subject", 2, c.subject.View())
+
+	b.WriteString("\n")
+
+	marker := "  "
+	if c.field == 3 {
+		marker = markStyle.Render("> ")
+	}
+
+	b.WriteString(marker + dimStyle.Render("Body") + "\n")
+	b.WriteString(c.body.View())
+	b.WriteString("\n")
+
+	return b.String()
 }
 
-// wrap breaks a paragraph at word boundaries.
-func wrap(s string, width int) []string {
-	if s == "" {
-		return []string{""}
+// --- move picker ------------------------------------------------------------
+
+func (m *Model) movePickerView() string {
+	var b strings.Builder
+
+	b.WriteString("  " + dimStyle.Render("move to: ") + m.moveFilter.View() + "\n\n")
+
+	matches := m.moveMatches()
+	if len(matches) == 0 {
+		b.WriteString(dimStyle.Render("  no box matches"))
+
+		return b.String()
 	}
 
-	words := strings.Fields(s)
-	if len(words) == 0 {
-		return []string{""}
+	end := minInt(len(matches), maxInt(1, m.pageSize()-2))
+
+	for i := 0; i < end; i++ {
+		line := fmt.Sprintf("  %-30s %s",
+			truncateStr(matches[i].Name, 30), dimStyle.Render(string(matches[i].Kind)))
+
+		if i == m.moveIdx {
+			line = selectedStyle.Render(padTo(line, m.width))
+		}
+
+		b.WriteString(line)
+		b.WriteString("\n")
 	}
 
-	var (
-		lines []string
-		cur   strings.Builder
-	)
+	return b.String()
+}
 
-	for _, w := range words {
-		if cur.Len() == 0 {
-			cur.WriteString(w)
+// --- calendar and journal ---------------------------------------------------
+
+func (m *Model) calendarView() string {
+	if m.cal == nil {
+		return dimStyle.Render("  Calendar is not configured. Run `frankenstein calendar setup`.")
+	}
+
+	if len(m.events) == 0 {
+		return dimStyle.Render("  Nothing scheduled in the next week.")
+	}
+
+	var b strings.Builder
+
+	var day string
+
+	rows := 0
+
+	for i, e := range m.events {
+		if rows >= maxInt(1, m.pageSize()-1) {
+			break
+		}
+
+		d := e.Start.Format("Monday 2 January")
+		if d != day {
+			b.WriteString(sectionStyle.Render(d))
+			b.WriteString("\n")
+
+			day = d
+			rows++
+		}
+
+		when := fmt.Sprintf("%s-%s", e.Start.Format("15:04"), e.End.Format("15:04"))
+		if e.AllDay {
+			when = "all day"
+		}
+
+		line := fmt.Sprintf("  %-13s %s", when, truncateStr(e.Title, maxInt(10, m.width-20)))
+
+		if i == m.extraIdx {
+			line = selectedStyle.Render(padTo(line, m.width))
+		}
+
+		b.WriteString(line)
+		b.WriteString("\n")
+
+		rows++
+	}
+
+	return b.String()
+}
+
+func (m *Model) journalView() string {
+	if len(m.journal) == 0 {
+		return dimStyle.Render("  Nothing written yet. Use `frankenstein journal write`.")
+	}
+
+	var b strings.Builder
+
+	end := minInt(len(m.journal), m.pageSize())
+
+	for i := 0; i < end; i++ {
+		e := m.journal[i]
+
+		line := fmt.Sprintf("  %-12s %s", e.Day, truncateStr(e.Title, maxInt(10, m.width-18)))
+
+		if i == m.extraIdx {
+			line = selectedStyle.Render(padTo(line, m.width))
+		}
+
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+// --- help -------------------------------------------------------------------
+
+func (m *Model) helpView() string {
+	rows := [][2]string{
+		{"j k up down", "move"},
+		{"g G", "top, bottom"},
+		{"enter", "open"},
+		{"esc backspace", "back"},
+		{"1-9", "jump to a box"},
+		{"tab shift+tab", "Mail, Calendar, Journal"},
+		{"", ""},
+		{"c", "compose"},
+		{"r", "reply in a thread, sync in a list"},
+		{"R", "reply all"},
+		{"f", "forward"},
+		{"", ""},
+		{"space", "select a thread"},
+		{"ctrl+a", "select all, or clear the selection"},
+		{"", ""},
+		{"i", "screen sender to the Imbox"},
+		{"d", "screen sender to the Feed"},
+		{"p", "screen sender to the Paper Trail"},
+		{"x", "screen sender out"},
+		{"ctrl+s", "open the screener queue"},
+		{"", ""},
+		{"e u", "mark read, mark unread"},
+		{"s", "star"},
+		{"a t !", "archive, trash, spam"},
+		{"v", "move to a box"},
+		{"", ""},
+		{"/", "filter the list"},
+		{"?", "close this help"},
+		{"q ctrl+c", "quit"},
+	}
+
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("  frankenstein - keys"))
+	b.WriteString("\n\n")
+
+	for _, r := range rows {
+		if r[0] == "" {
+			b.WriteString("\n")
 
 			continue
 		}
 
-		if cur.Len()+1+len([]rune(w)) > width {
-			lines = append(lines, cur.String())
-			cur.Reset()
-			cur.WriteString(w)
-
-			continue
-		}
-
-		cur.WriteString(" ")
-		cur.WriteString(w)
+		b.WriteString(fmt.Sprintf("  %s  %s\n",
+			keyStyle.Render(fmt.Sprintf("%-14s", r[0])), dimStyle.Render(r[1])))
 	}
 
-	if cur.Len() > 0 {
-		lines = append(lines, cur.String())
-	}
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("  Actions apply to the selection, or to the row under the cursor."))
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("  Screening decides about a sender, so it moves everything they sent."))
 
-	return lines
-}
-
-// renderBody strips HTML to readable text. Deliberately crude; a terminal mail
-// client does not need a browser engine.
-func renderBody(b mail.Body) string {
-	if !strings.Contains(strings.ToLower(b.MIMEType), "html") {
-		return b.Content
-	}
-
-	s := b.Content
-
-	for _, tag := range []string{"script", "style", "head"} {
-		s = stripElement(s, tag)
-	}
-
-	s = strings.NewReplacer(
-		"<br>", "\n", "<br/>", "\n", "<br />", "\n",
-		"</p>", "\n\n", "</div>", "\n", "</tr>", "\n", "</li>", "\n",
-		"&nbsp;", " ", "&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#39;", "'",
-	).Replace(s)
-
-	var out strings.Builder
-
-	depth := 0
-
-	for _, r := range s {
-		switch {
-		case r == '<':
-			depth++
-		case r == '>' && depth > 0:
-			depth--
-		case depth == 0:
-			out.WriteRune(r)
-		}
-	}
-
-	lines := strings.Split(out.String(), "\n")
-	kept := make([]string, 0, len(lines))
-	blank := 0
-
-	for _, l := range lines {
-		l = strings.TrimRight(l, " \t")
-
-		if strings.TrimSpace(l) == "" {
-			blank++
-			if blank > 1 {
-				continue
-			}
-		} else {
-			blank = 0
-		}
-
-		kept = append(kept, l)
-	}
-
-	return strings.TrimSpace(strings.Join(kept, "\n"))
-}
-
-func stripElement(s, tag string) string {
-	lower := strings.ToLower(s)
-	open := "<" + tag
-	closeTag := "</" + tag + ">"
-
-	for {
-		i := strings.Index(lower, open)
-		if i < 0 {
-			return s
-		}
-
-		j := strings.Index(lower[i:], closeTag)
-		if j < 0 {
-			return s[:i]
-		}
-
-		end := i + j + len(closeTag)
-		s = s[:i] + s[end:]
-		lower = strings.ToLower(s)
-	}
-}
-
-func relTime(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-
-	now := time.Now()
-
-	switch {
-	case t.YearDay() == now.YearDay() && t.Year() == now.Year():
-		return t.Format("15:04")
-	case now.Sub(t) < 7*24*time.Hour:
-		return t.Format("Mon 15:04")
-	case t.Year() == now.Year():
-		return t.Format("2 Jan")
-	default:
-		return t.Format("2 Jan 06")
-	}
-}
-
-func truncateStr(s string, n int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-
-	if n <= 0 {
-		return ""
-	}
-
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-
-	if n == 1 {
-		return "…"
-	}
-
-	return string(r[:n-1]) + "…"
-}
-
-// padTo right-pads so a reversed selection covers the full row.
-func padTo(s string, width int) string {
-	// Styled strings carry escape sequences, so measure printable width only.
-	visible := 0
-	inEscape := false
-
-	for _, r := range s {
-		switch {
-		case r == '\x1b':
-			inEscape = true
-		case inEscape && r == 'm':
-			inEscape = false
-		case !inEscape:
-			visible++
-		}
-	}
-
-	if visible >= width {
-		return s
-	}
-
-	return s + strings.Repeat(" ", width-visible)
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-
-	return b
+	return b.String()
 }
