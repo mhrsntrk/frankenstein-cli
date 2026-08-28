@@ -254,6 +254,8 @@ func Run(ctx context.Context) int {
 		newTUICmd(app),
 	)
 
+	root.AddCommand(newDocsCmd(app, root))
+
 	if err := root.ExecuteContext(ctx); err != nil {
 		if app.JSON {
 			enc := json.NewEncoder(app.Out)

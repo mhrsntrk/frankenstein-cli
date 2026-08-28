@@ -1,5 +1,6 @@
 /frankenstein
 /dist/
+/.gen/
 *.db
 *.db-wal
 *.db-shm

@@ -1,0 +1,220 @@
+# GoReleaser builds the binaries, cuts the GitHub release, and publishes to
+# Homebrew and the AUR.
+#
+# Everything is CGO-free: modernc.org/sqlite is a pure Go SQLite, so there is
+# no C toolchain to cross-compile and the binaries are static.
+version: 2
+
+project_name: frankenstein
+
+before:
+  hooks:
+    - go mod tidy
+    # Man pages and completions are generated from the command tree, so they
+    # cannot drift from the flags they document.
+    # Written outside dist/, which GoReleaser requires to be empty when it
+    # starts.
+    - go run ./cmd/frankenstein docs --dir .gen
+
+builds:
+  - id: frankenstein
+    main: ./cmd/frankenstein
+    binary: frankenstein
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/mhrsntrk/frankenstein-cli/internal/cli.Version={{.Version}}
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - LICENSE
+      - docs/proton-api-findings.md
+      - src: .gen/man/*.1
+        dst: man
+      - src: .gen/completions/*
+        dst: completions
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: '{{ incpatch .Version }}-next'
+
+changelog:
+  sort: asc
+  use: github
+  groups:
+    - title: Features
+      regexp: '^feat'
+      order: 0
+    - title: Fixes
+      regexp: '^fix'
+      order: 1
+    - title: Other
+      order: 99
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+# Native packages for the distros that want them. Arch users get the AUR entry
+# below instead; these cover Debian, Fedora and Alpine.
+nfpms:
+  - id: packages
+    package_name: frankenstein
+    vendor: mhrsntrk
+    homepage: https://github.com/mhrsntrk/frankenstein-cli
+    maintainer: mhrsntrk <m@mhrsntrk.com>
+    description: |-
+      A terminal email client with HEY's workflow, backed by Proton Mail
+      and Google Calendar.
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    # The keyring goes through the D-Bus Secret Service on Linux. Without a
+    # provider the tool still works and falls back to a 0600 file, so these are
+    # recommendations rather than hard dependencies.
+    recommends:
+      - gnome-keyring
+    contents:
+      - src: ./.gen/completions/frankenstein.bash
+        dst: /usr/share/bash-completion/completions/frankenstein
+        file_info:
+          mode: 0644
+      - src: ./.gen/completions/frankenstein.zsh
+        dst: /usr/share/zsh/site-functions/_frankenstein
+        file_info:
+          mode: 0644
+      - src: ./.gen/completions/frankenstein.fish
+        dst: /usr/share/fish/vendor_completions.d/frankenstein.fish
+        file_info:
+          mode: 0644
+      - src: ./.gen/man/frankenstein.1
+        dst: /usr/share/man/man1/frankenstein.1
+        file_info:
+          mode: 0644
+
+# Homebrew, for macOS and Linuxbrew. A cask rather than a formula: GoReleaser
+# deprecated the formula path because it produced hand-rolled formulas that
+# only pretended to build from source.
+homebrew_casks:
+  - name: frankenstein
+    repository:
+      owner: mhrsntrk
+      name: homebrew-tap
+      token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
+    directory: Casks
+    homepage: https://github.com/mhrsntrk/frankenstein-cli
+    description: A terminal email client with HEY's workflow, backed by Proton Mail and Google Calendar
+    binaries:
+      - frankenstein
+    manpages:
+      - man/frankenstein.1
+    completions:
+      bash: completions/frankenstein.bash
+      zsh: completions/frankenstein.zsh
+      fish: completions/frankenstein.fish
+    commit_author:
+      name: mhrsntrk
+      email: m@mhrsntrk.com
+    hooks:
+      post:
+        # An unsigned binary downloaded by Homebrew is quarantined by Gatekeeper
+        # and refuses to start. Clearing the attribute is what every unsigned
+        # cask has to do.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr",
+                           args: ["-dr", "com.apple.quarantine", "#{staged_path}/frankenstein"]
+          end
+    # `brew uninstall --zap` should leave nothing behind. The cache holds
+    # decrypted message bodies, so removing it on request matters more here
+    # than for a typical tool.
+    zap:
+      trash:
+        - '~/.config/frankenstein'
+        - '~/.local/share/frankenstein'
+
+    caveats: |
+      Get started with:
+
+        frankenstein login
+        frankenstein sync
+        frankenstein tui
+
+      The first login needs a CAPTCHA solved in a browser; the command prints
+      the URL and waits. Credentials go to your login keychain.
+
+# Arch, which is what Omarchy is built on. A -bin package: it installs the
+# prebuilt binary rather than compiling, so `yay -S frankenstein-bin` is quick.
+aurs:
+  - name: frankenstein-bin
+    homepage: https://github.com/mhrsntrk/frankenstein-cli
+    description: A terminal email client with HEY's workflow, backed by Proton Mail and Google Calendar
+    maintainers:
+      - 'mhrsntrk <m@mhrsntrk.com>'
+    license: MIT
+    private_key: '{{ .Env.AUR_KEY }}'
+    git_url: ssh://aur@aur.archlinux.org/frankenstein-bin.git
+    provides:
+      - frankenstein
+    conflicts:
+      - frankenstein
+    # gnome-keyring is optional: without a Secret Service provider the session
+    # falls back to a 0600 file under ~/.config/frankenstein.
+    optdepends:
+      - 'gnome-keyring: store the session in the system keyring instead of a file'
+    package: |-
+      install -Dm755 "./frankenstein" "${pkgdir}/usr/bin/frankenstein"
+
+      install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/frankenstein-bin/LICENSE"
+      install -Dm644 "./README.md" "${pkgdir}/usr/share/doc/frankenstein-bin/README.md"
+
+      install -Dm644 "./man/frankenstein.1" "${pkgdir}/usr/share/man/man1/frankenstein.1"
+
+      install -Dm644 "./completions/frankenstein.bash" "${pkgdir}/usr/share/bash-completion/completions/frankenstein"
+      install -Dm644 "./completions/frankenstein.zsh" "${pkgdir}/usr/share/zsh/site-functions/_frankenstein"
+      install -Dm644 "./completions/frankenstein.fish" "${pkgdir}/usr/share/fish/vendor_completions.d/frankenstein.fish"
+
+release:
+  github:
+    owner: mhrsntrk
+    name: frankenstein-cli
+  footer: |
+    ---
+
+    ## Install
+
+    **macOS and Linux, Homebrew**
+
+    ```sh
+    brew install mhrsntrk/tap/frankenstein
+    ```
+
+    **Arch, including Omarchy**
+
+    ```sh
+    yay -S frankenstein-bin
+    ```
+
+    **Anything else**
+
+    ```sh
+    go install github.com/mhrsntrk/frankenstein-cli/cmd/frankenstein@{{ .Tag }}
+    ```

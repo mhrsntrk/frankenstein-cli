@@ -39,13 +39,30 @@ Proton's own server-side rules, which keep working with this tool shut down.
 
 ## Install
 
-Needs Go 1.26 or newer.
+**macOS and Linux, with Homebrew**
+
+```sh
+brew install mhrsntrk/tap/frankenstein
+```
+
+**Arch, including [Omarchy](https://omarchy.org)**
+
+```sh
+yay -S frankenstein-bin
+```
+
+**Debian, Ubuntu, Fedora, Alpine**
+
+Download the `.deb`, `.rpm` or `.apk` from the
+[latest release](https://github.com/mhrsntrk/frankenstein-cli/releases/latest).
+
+**With Go**
 
 ```sh
 go install github.com/mhrsntrk/frankenstein-cli/cmd/frankenstein@latest
 ```
 
-Or from source:
+**From source**
 
 ```sh
 git clone https://github.com/mhrsntrk/frankenstein-cli
@@ -53,13 +70,28 @@ cd frankenstein-cli
 make install
 ```
 
-Then:
+Every install carries man pages and completions for bash, zsh and fish.
+
+### Then
 
 ```sh
 frankenstein login            # Proton, with a CAPTCHA the first time
 frankenstein sync             # fill the local cache
 frankenstein screener setup   # create the four labels in Proton
 frankenstein tui
+```
+
+### A note for Linux
+
+Credentials go to the system keyring through the D-Bus Secret Service, which
+means something has to be providing it: `gnome-keyring`, `kwallet` or
+`keepassxc` all work. Omarchy ships with one running.
+
+Without a provider nothing breaks. The session falls back to a `0600` file at
+`~/.config/frankenstein/credentials.json`. To see which one is in use:
+
+```sh
+frankenstein whoami
 ```
 
 ## The TUI
@@ -230,8 +262,8 @@ and your providers.
 ```sh
 make build      # build the binary
 make test       # run the tests
-make vet        # go vet
-make fmt        # gofmt
+make check      # what CI runs: fmt, vet, tests, provider boundary
+make snapshot   # build every release artifact locally, publish nothing
 ```
 
 The test suite runs against `internal/mail/fake`, so it needs no Proton
@@ -255,6 +287,8 @@ decrypting, composing, sending, and screener labelling.
 Two write paths remain inferred rather than verified, because the read side is
 all Proton documents by example: updating a newsletter subscription and
 unsubscribing. `frankenstein screener route` depends on the first.
+
+Releases are cut by tagging; see [RELEASING.md](RELEASING.md).
 
 ## Contributing
 
