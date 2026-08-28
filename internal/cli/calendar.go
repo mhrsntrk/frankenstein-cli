@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -105,12 +106,12 @@ func newCalendarSetupCmd(app *App) *cobra.Command {
 
 				cfg.Calendar.ClientID, err = prompt(app.Err, "client id: ")
 				if err != nil {
-					return err
+					return errNeedsTerminal(err)
 				}
 
 				entered, err := promptSecret(app.Err, "client secret: ")
 				if err != nil {
-					return err
+					return errNeedsTerminal(err)
 				}
 
 				cfg.Calendar.ClientSecret = string(entered)
@@ -156,30 +157,54 @@ func newCalendarSetupCmd(app *App) *cobra.Command {
 // googleClientHelp is printed when the user has to make their own OAuth
 // client, which is most of the time: shipping one is a decision with
 // consequences, and this build did not make it.
+// Each step carries its own URL. Google renames the console's sections often
+// enough that directions by menu name go stale; the URLs have not moved.
 const googleClientHelp = `
-This build has no built-in Google client, so it needs yours. It takes a few
-minutes and only has to be done once.
+The calendar and todos use Google, and Google needs an OAuth client to let
+anything in. This tool ships without one on purpose, so it uses yours. Five
+minutes, once.
 
-  1. Open https://console.cloud.google.com/projectcreate and make a project.
+  1. Make a project
+     https://console.cloud.google.com/projectcreate
 
-  2. Enable the two APIs this uses:
-       https://console.cloud.google.com/apis/library/calendar-json.googleapis.com
-       https://console.cloud.google.com/apis/library/tasks.googleapis.com
+  2. Enable the two APIs it calls
+     https://console.cloud.google.com/apis/library/calendar-json.googleapis.com
+     https://console.cloud.google.com/apis/library/tasks.googleapis.com
 
-  3. Under APIs & Services > OAuth consent screen, choose External, fill in
-     the name and your own email, and add yourself under Test users. Leaving
-     it in Testing is fine: it is your own client, used by you.
+  3. Set up the consent screen, choosing "External"
+     https://console.cloud.google.com/auth/overview
+     Add your own address under Audience > Test users. Leave it in Testing;
+     this is your client, used by you.
 
-  4. Under Credentials, create an OAuth client ID of type "Desktop app".
-     No redirect URI is needed; the loopback flow picks a free local port.
+  4. Create credentials of type "Desktop app"
+     https://console.cloud.google.com/auth/clients/create
+     No redirect URI is needed: the sign-in binds a free port on this machine.
 
-  5. Paste the two values below. They go in ~/.config/frankenstein/config.json;
-     the token itself goes to your keyring.
+  5. Paste the two values below.
 
-Google warns that the app is unverified. That warning is about your own client,
-which you just made, so "Advanced" then "Go to ... (unsafe)" is the way through.
+You will be asked to grant read and write on your calendar and your tasks, and
+read on your calendar list. Nothing else.
+
+Google will say the app is not verified. It is yours and you made it a minute
+ago, so "Advanced" then "Go to ... (unsafe)" is the way through.
+
+The client id and secret are stored in ~/.config/frankenstein/config.json.
+The token goes to your system keyring, and "frankenstein logout" clears it.
 
 `
+
+// errNeedsTerminal turns the bare EOF from a closed stdin into something that
+// says what to do instead.
+func errNeedsTerminal(err error) error {
+	if errors.Is(err, io.EOF) {
+		return fmt.Errorf(
+			"this needs a terminal to type into.\n" +
+				"To set it up without one, pass the values as flags:\n\n" +
+				"  frankenstein calendar setup --client-id ... --client-secret ...")
+	}
+
+	return err
+}
 
 func newCalendarsCmd(app *App) *cobra.Command {
 	return &cobra.Command{

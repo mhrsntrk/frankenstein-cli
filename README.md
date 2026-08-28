@@ -81,6 +81,17 @@ frankenstein screener setup   # create the four labels in Proton
 frankenstein tui
 ```
 
+The calendar and todos are a separate, optional step. They need a Google OAuth
+client of your own, which takes about five minutes to create:
+
+```sh
+frankenstein calendar setup
+```
+
+The command walks you through it. [docs/calendar-setup.md](docs/calendar-setup.md)
+is the same thing written down, including why the client is yours rather than
+one shipped with the binary.
+
 ### A note for Linux
 
 Credentials go to the system keyring through the D-Bus Secret Service, which
@@ -140,6 +151,7 @@ frankenstein screener decide a@b.com feed
 frankenstein screener route              # push list rules server-side
 
 frankenstein newsletters                 # volume, unread, trackers, routing
+frankenstein calendar setup                # once, needs your own Google client
 frankenstein calendar events --days 7
 frankenstein calendar add "Standup" --start "09:30" --for 30m
 frankenstein todo add "Renew domain" --due 2026-09-15
