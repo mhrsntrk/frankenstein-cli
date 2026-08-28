@@ -109,6 +109,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		for _, c := range msg {
 			m.calColours[c.ID] = heyui.ColourFor(c.Color)
+			m.calNames[c.ID] = c.Name
 		}
 
 		return m, nil
@@ -258,6 +259,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// views, and both were swallowing the calendar's own meaning for them.
 	if m.view == viewCalendar {
 		if model, cmd, handled := m.calendarKey(msg); handled {
+			return model, cmd
+		}
+	}
+
+	if m.view == viewEventDetail {
+		if model, cmd, handled := m.eventDetailKey(msg); handled {
 			return model, cmd
 		}
 	}
@@ -491,6 +498,17 @@ func (m *Model) calendarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 			return m, nil, true
 		}
 
+		m.detailID = e.ID
+		m.push(viewEventDetail)
+
+		return m, nil, true
+
+	case "e":
+		e, ok := m.selectedEvent()
+		if !ok {
+			return m, nil, true
+		}
+
 		m.eventForm = newEventForm(&e, m.calAnchor())
 		m.push(viewEventForm)
 
@@ -552,7 +570,11 @@ func (m *Model) enterSection() tea.Cmd {
 	case sectionCalendar:
 		m.view = viewCalendar
 
-		return tea.Batch(m.loadEvents(), m.loadBands())
+		// The calendar list comes too, because it carries the colours and the
+		// names. They used to arrive only when the picker was opened, so an
+		// account with several calendars drew them all in one colour until
+		// somebody happened to press g.
+		return tea.Batch(m.loadEvents(), m.loadBands(), m.loadCalendars())
 	case sectionJournal:
 		m.view = viewJournal
 

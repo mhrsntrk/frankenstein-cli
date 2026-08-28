@@ -19,9 +19,6 @@ var (
 	DefaultClientSecret string
 )
 
-// HasBuiltInClient reports whether this build carries one.
-func HasBuiltInClient() bool { return DefaultClientID != "" }
-
 // Credentials resolves which OAuth client to use: the one in the user's config
 // if they set one, otherwise whatever the build carries.
 func Credentials(configuredID, configuredSecret string) (id, secret string) {

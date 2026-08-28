@@ -28,6 +28,12 @@ type Event struct {
 
 func (e Event) recording() Recording {
 	return Recording{
+		// OccurrenceID carries the provider's identifier because key() reads
+		// only ID and OccurrenceID, and HEY's ID is an int64 that a Google
+		// event id will not fit. Leaving both unset makes key() return "",
+		// which selection.has() treats as "nothing is selected" — so the grid
+		// silently highlighted no event at all.
+		OccurrenceID:  e.ID,
 		Title:         e.Title,
 		AllDay:        e.AllDay,
 		StartsAt:      e.StartsAt,

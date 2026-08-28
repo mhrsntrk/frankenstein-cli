@@ -33,6 +33,10 @@ func (m *Model) openCalendars() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) loadCalendars() tea.Cmd {
+	if m.cal == nil {
+		return nil
+	}
+
 	return bg(30*time.Second, func(ctx context.Context) tea.Msg {
 		cals, err := m.cal.Calendars(ctx)
 		if err != nil {
@@ -122,9 +126,11 @@ func (p *calendarPicker) selected() []string {
 func (m *Model) applyCalendars(p *calendarPicker) tea.Cmd {
 	m.calendarIDs = p.selected()
 	m.calColours = map[string]string{}
+	m.calNames = map[string]string{}
 
 	for _, c := range p.calendars {
 		m.calColours[c.ID] = heyui.ColourFor(c.Color)
+		m.calNames[c.ID] = c.Name
 	}
 
 	ids := append([]string(nil), m.calendarIDs...)

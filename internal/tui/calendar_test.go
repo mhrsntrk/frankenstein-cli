@@ -179,14 +179,25 @@ func TestCalendarCreateEditDelete(t *testing.T) {
 		t.Error("the form stayed open after saving")
 	}
 
-	// Edit the selected event.
+	// Edit the selected event. enter reads it and e edits it, so that seeing
+	// an event's notes does not mean opening something that can overwrite them.
 	h.m.view = viewCalendar
 	h.m.extraIdx = 1
 
 	h.press(t, "enter")
 
+	if h.m.view != viewEventDetail {
+		t.Fatalf("enter opened %v, want the detail view", h.m.view)
+	}
+
+	if h.m.eventForm != nil {
+		t.Error("enter opened the edit form; it should only read")
+	}
+
+	h.press(t, "e")
+
 	if h.m.eventForm == nil {
-		t.Fatal("enter did not open the form")
+		t.Fatal("e did not open the form")
 	}
 
 	if got := h.m.eventForm.title.Value(); got != "Lunch" {
@@ -347,19 +358,53 @@ func TestHabitsManagerWorks(t *testing.T) {
 	}
 }
 
-func TestTodosManagerNeedsGoogle(t *testing.T) {
+// Todos are local, so they work on a machine that has never authorised a
+// Google account. They used to be Google Tasks, and the manager refused to
+// open without one.
+func TestTodosWorkWithoutGoogle(t *testing.T) {
 	h, _ := calHarness(t)
 
-	// The harness has no todo functions, which is what an unconfigured Google
-	// account looks like.
+	h.m.cal = nil
+
 	h.press(t, "s")
 
-	if h.m.view == viewTodos {
-		t.Error("the todo manager opened without a todo source")
+	if h.m.view != viewTodos {
+		t.Fatalf("the todo manager did not open without a calendar; view = %v", h.m.view)
 	}
 
-	if h.m.err == nil {
-		t.Error("opening todos without Google said nothing")
+	if h.m.err != nil {
+		t.Errorf("opening todos complained: %v", h.m.err)
+	}
+
+	// Add one, and it has to reach the store rather than a session slice.
+	h.press(t, "a")
+	h.typeText(t, "Renew the domain")
+	h.press(t, "enter")
+
+	stored, err := h.ps.Todos(context.Background(), false)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+
+	if len(stored) != 1 || stored[0].Title != "Renew the domain" {
+		t.Fatalf("the store holds %+v", stored)
+	}
+
+	// And it has to come back on the ribbon.
+	h.m.view = viewCalendar
+
+	if out := h.m.View(); !strings.Contains(out, "Renew the domain") {
+		t.Error("the todo did not appear on the calendar ribbon")
+	}
+
+	// Completing it takes it off the open list.
+	h.m.view = viewTodos
+	h.drain(t, h.m.loadBands())
+	h.press(t, " ")
+
+	stored, _ = h.ps.Todos(context.Background(), false)
+	if len(stored) != 0 {
+		t.Errorf("after completing, open todos = %+v", stored)
 	}
 }
 
@@ -557,5 +602,92 @@ func TestEventsAreFetchedFromEveryShownCalendar(t *testing.T) {
 		if e.CalendarID == "" {
 			t.Errorf("%q has no calendar", e.Title)
 		}
+	}
+}
+
+// TestEventDetailShowsEverything is the reason the detail view exists: the
+// grid has room for a title, so location, notes and attendees had nowhere to
+// be read at all.
+func TestEventDetailShowsEverything(t *testing.T) {
+	h, cal := calHarness(t)
+
+	start := time.Date(2026, 8, 28, 14, 0, 0, 0, time.Local)
+	cal.events = []fcal.Event{{
+		ID:        "e9",
+		Title:     "Design review",
+		Location:  "Room 4, second floor",
+		Notes:     "Bring the printed mocks.",
+		Attendees: []string{"ada@example.com", "grace@example.com"},
+		Status:    "confirmed",
+		Start:     start,
+		End:       start.Add(90 * time.Minute),
+	}}
+
+	h.m.view = viewCalendar
+	h.drain(t, h.m.loadEvents())
+
+	h.m.extraIdx = 0
+	h.press(t, "enter")
+
+	if h.m.view != viewEventDetail {
+		t.Fatalf("view = %v, want the detail view", h.m.view)
+	}
+
+	out := h.m.View()
+
+	for _, want := range []string{
+		"Design review",
+		"Room 4, second floor",
+		"Bring the printed mocks.",
+		"ada@example.com",
+		"grace@example.com",
+		"confirmed",
+		"14:00",
+		"15:30",
+		"1h30m",
+		"Friday 28 August 2026",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the detail view is missing %q", want)
+		}
+	}
+
+	// And the footer has to say how to get out and how to edit.
+	for _, want := range []string{"edit", "back"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the footer is missing %q", want)
+		}
+	}
+
+	h.press(t, "esc")
+
+	if h.m.view != viewCalendar {
+		t.Errorf("esc left the view at %v, want the calendar", h.m.view)
+	}
+}
+
+// TestEventDetailSurvivesReload guards the reason detail is held by ID: a
+// reload reorders m.events, and an index would quietly show a different event.
+func TestEventDetailSurvivesReload(t *testing.T) {
+	h, cal := calHarness(t)
+
+	start := time.Date(2026, 8, 28, 9, 0, 0, 0, time.Local)
+	cal.events = []fcal.Event{
+		{ID: "a", Title: "First", Start: start, End: start.Add(time.Hour)},
+		{ID: "b", Title: "Second", Start: start.Add(2 * time.Hour), End: start.Add(3 * time.Hour)},
+	}
+
+	h.m.view = viewCalendar
+	h.drain(t, h.m.loadEvents())
+
+	h.m.extraIdx = 1
+	h.press(t, "enter")
+
+	// The list comes back in the other order.
+	cal.events = []fcal.Event{cal.events[1], cal.events[0]}
+	h.drain(t, h.m.loadEvents())
+
+	if got, ok := h.m.detailEvent(); !ok || got.Title != "Second" {
+		t.Errorf("after a reload the detail view shows %+v, want Second", got)
 	}
 }

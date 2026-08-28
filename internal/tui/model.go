@@ -75,6 +75,7 @@ const (
 	viewJournal
 	viewMovePicker
 	viewEventForm
+	viewEventDetail
 	viewHabits
 	viewTodos
 	viewCalendars
@@ -142,9 +143,15 @@ type Model struct {
 	cal        fcal.Provider
 	calendarID string
 
-	// calendarIDs are the calendars drawn, and calColours what each draws in.
+	// calendarIDs are the calendars drawn, calColours what each draws in, and
+	// calNames what to call one in the detail view.
 	calendarIDs []string
 	calColours  map[string]string
+	calNames    map[string]string
+
+	// detailID is the event the detail view is showing, held by ID so a
+	// reload underneath it cannot swap in a different event.
+	detailID string
 
 	// saveCalendars persists the picker's choice. Supplied by the command
 	// layer, which owns the config file.
@@ -186,8 +193,8 @@ type Model struct {
 	calView   calendarView
 	calOffset int
 
-	// calHabits and calTodos fill the bands above and below the grid. Habits
-	// are local; todos come from Google Tasks.
+	// calHabits and calTodos fill the bands above and below the grid. Both
+	// are local, and live in the same SQLite file as the mail cache.
 	calHabits []heyui.Habit
 	calTodos  []heyui.Todo
 
@@ -269,6 +276,7 @@ func New(
 		cal:            cal,
 		calendarIDs:    cfg.Calendar.Shown(),
 		calColours:     map[string]string{},
+		calNames:       map[string]string{},
 		saveCalendars:  saveCalendars,
 		todos:          todos.List,
 		addTodoFn:      todos.Add,

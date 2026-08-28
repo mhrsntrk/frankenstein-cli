@@ -77,6 +77,8 @@ func (m *Model) View() string {
 		b.WriteString(m.movePickerView())
 	case viewEventForm:
 		b.WriteString(m.eventFormView())
+	case viewEventDetail:
+		b.WriteString(m.eventDetailView())
 	case viewHabits, viewTodos:
 		b.WriteString(m.bandView())
 	case viewCalendars:
@@ -192,6 +194,12 @@ func (m *Model) locationName() string {
 		}
 
 		return "New event"
+	case viewEventDetail:
+		if e, ok := m.detailEvent(); ok {
+			return truncateStr(e.Title, maxInt(10, m.contentWidth()/2))
+		}
+
+		return "Event"
 	case viewHabits:
 		return "Habits"
 	case viewTodos:
@@ -392,6 +400,10 @@ func (m *Model) keyBindings() []keyBinding {
 		return []keyBinding{
 			{"tab", "field"}, {"ctrl+d", "save"}, {"esc", "cancel"},
 		}
+	case viewEventDetail:
+		return []keyBinding{
+			{"e", "edit"}, {"D", "delete"}, {"esc", "back"}, {"q", "quit"},
+		}
 	case viewHabits:
 		return []keyBinding{
 			{"j/k", "navigate"}, {"space", "keep today"}, {"a", "add"},
@@ -410,7 +422,7 @@ func (m *Model) keyBindings() []keyBinding {
 		return []keyBinding{
 			{"1", "day"}, {"2", "week"}, {"3", "year"},
 			{"p/n", "back, forward"}, {"t", "today"},
-			{"c", "new event"}, {"enter", "edit"}, {"D", "delete"},
+			{"c", "new event"}, {"enter", "details"}, {"e", "edit"}, {"D", "delete"},
 			{"b", "habits"}, {"s", "todos"}, {"g", "calendars"},
 			{"tab", "section"}, {"r", "reload"}, {"?", "help"}, {"q", "quit"},
 		}

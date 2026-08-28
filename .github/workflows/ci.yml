@@ -53,6 +53,10 @@ jobs:
           go-version: '1.26'
           cache: true
       - name: staticcheck
+        # The packages copied from hey-cli are skipped. They carry helpers this
+        # client does not call, and staticcheck's unused check flags every one
+        # of them; deleting them to satisfy it would make the files stop
+        # matching upstream, which is the whole point of keeping them verbatim.
         run: |
           go install honnef.co/go/tools/cmd/staticcheck@latest
-          staticcheck ./...
+          staticcheck $(go list ./... | grep -Ev '/internal/(tui/heyui|tui/heymodel|habit|terminal)$')

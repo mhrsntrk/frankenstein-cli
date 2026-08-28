@@ -25,6 +25,7 @@ type harness struct {
 	m  *Model
 	p  *fake.Provider
 	st *store.Store
+	ps *personal.Store
 }
 
 func newHarness(t *testing.T) *harness {
@@ -89,7 +90,38 @@ func newHarness(t *testing.T) *harness {
 	sc := screener.New(st, p, cfg.Screener)
 	ps := personal.New(st.DB(), filepath.Join(dir, "journal"))
 
-	m := New(st, fsync.New(p, st), p, sc, ps, nil, Todos{}, nil, cfg)
+	// Todos are wired to the real local store, exactly as skill.go wires
+	// them, so the band tests exercise the path that ships.
+	todos := Todos{
+		List: func(ctx context.Context) ([]TodoItem, error) {
+			all, err := ps.Todos(ctx, false)
+			if err != nil {
+				return nil, err
+			}
+
+			out := make([]TodoItem, 0, len(all))
+			for _, todo := range all {
+				out = append(out, TodoItem{Title: todo.Title, Done: todo.Done()})
+			}
+
+			return out, nil
+		},
+		Add: func(ctx context.Context, title string) error {
+			_, err := ps.AddTodo(ctx, title, nil, "")
+
+			return err
+		},
+		Complete: func(ctx context.Context, title string) error {
+			todo, err := ps.TodoByTitle(ctx, title)
+			if err != nil {
+				return err
+			}
+
+			return ps.CompleteTodo(ctx, todo.ID, true)
+		},
+	}
+
+	m := New(st, fsync.New(p, st), p, sc, ps, nil, todos, nil, cfg)
 	m.width, m.height = 100, 30
 	m.boxes = p.Boxen
 	m.quickBoxes = pickQuickBoxes(p.Boxen, cfg.Screener)
@@ -99,7 +131,7 @@ func newHarness(t *testing.T) *harness {
 	m.box = p.Boxen[0]
 	m.account = "me@example.com"
 
-	return &harness{m: m, p: p, st: st}
+	return &harness{m: m, p: p, st: st, ps: ps}
 }
 
 // press sends a key and drains the command it returns, so the resulting
@@ -130,6 +162,19 @@ func (h *harness) press(t *testing.T, key string) {
 
 	_, cmd := h.m.Update(msg)
 	h.drain(t, cmd)
+}
+
+// typeText sends each character without draining what it returns.
+//
+// A text input answers a keystroke with textinput.Blink, which is a tick that
+// sleeps for the cursor's blink interval. Draining it costs half a second per
+// character, and the real runtime never waits on a tick either.
+func (h *harness) typeText(t *testing.T, s string) {
+	t.Helper()
+
+	for _, r := range s {
+		h.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
 }
 
 // drain runs a command and feeds its message back, following batches.
