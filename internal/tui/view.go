@@ -79,6 +79,8 @@ func (m *Model) View() string {
 		b.WriteString(m.eventFormView())
 	case viewHabits, viewTodos:
 		b.WriteString(m.bandView())
+	case viewCalendars:
+		b.WriteString(m.calendarsView())
 	}
 
 	b.WriteString("\n")
@@ -194,6 +196,8 @@ func (m *Model) locationName() string {
 		return "Habits"
 	case viewTodos:
 		return "Todos"
+	case viewCalendars:
+		return "Calendars"
 	case viewCalendar:
 		switch m.calView {
 		case calendarDay:
@@ -397,12 +401,17 @@ func (m *Model) keyBindings() []keyBinding {
 		return []keyBinding{
 			{"j/k", "navigate"}, {"space", "complete"}, {"a", "add"}, {"esc", "back"},
 		}
+	case viewCalendars:
+		return []keyBinding{
+			{"j/k", "navigate"}, {"space", "show or hide"}, {"a", "all"},
+			{"w", "only this one"}, {"esc", "back"},
+		}
 	case viewCalendar:
 		return []keyBinding{
 			{"1", "day"}, {"2", "week"}, {"3", "year"},
 			{"p/n", "back, forward"}, {"t", "today"},
 			{"c", "new event"}, {"enter", "edit"}, {"D", "delete"},
-			{"b", "habits"}, {"s", "todos"},
+			{"b", "habits"}, {"s", "todos"}, {"g", "calendars"},
 			{"tab", "section"}, {"r", "reload"}, {"?", "help"}, {"q", "quit"},
 		}
 	default:
@@ -781,6 +790,7 @@ func (m *Model) calendarView() string {
 			EndsAt:   e.End,
 			Location: e.Location,
 			Notes:    e.Notes,
+			Color:    m.calColours[e.CalendarID],
 		})
 	}
 

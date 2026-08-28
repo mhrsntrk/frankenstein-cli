@@ -18,6 +18,11 @@ type Calendar struct {
 	Name     string `json:"name"`
 	Primary  bool   `json:"primary,omitempty"`
 	TimeZone string `json:"time_zone,omitempty"`
+
+	// Color is the provider's own colour for the calendar, as a hex string.
+	// Showing several calendars at once is only readable if each keeps the
+	// colour its owner already recognises.
+	Color string `json:"color,omitempty"`
 }
 
 // Event is a calendar entry.
@@ -37,6 +42,11 @@ type Event struct {
 	Attendees []string `json:"attendees,omitempty"`
 	Status    string   `json:"status,omitempty"`
 	Link      string   `json:"link,omitempty"`
+
+	// CalendarID and Color say which calendar an event came from, so a view
+	// showing several at once can tell them apart.
+	CalendarID string `json:"calendar_id,omitempty"`
+	Color      string `json:"color,omitempty"`
 }
 
 // Duration is how long the event runs.
@@ -59,8 +69,40 @@ type EventDraft struct {
 // Provider is a calendar backend.
 type Provider interface {
 	Calendars(ctx context.Context) ([]Calendar, error)
+
+	// Events reads one calendar. EventsFrom reads several and tags each event
+	// with where it came from.
 	Events(ctx context.Context, calendarID string, from, to time.Time) ([]Event, error)
+	EventsFrom(ctx context.Context, calendarIDs []string, from, to time.Time) ([]Event, error)
 	CreateEvent(ctx context.Context, calendarID string, d EventDraft) (Event, error)
 	UpdateEvent(ctx context.Context, calendarID string, d EventDraft) (Event, error)
 	DeleteEvent(ctx context.Context, calendarID, eventID string) error
+}
+
+// PrimaryAlias is the identifier Google accepts for the account's default
+// calendar. The calendar list answers with the real address instead, so
+// anything comparing a configured ID against a listed one has to resolve it.
+const PrimaryAlias = "primary"
+
+// ResolveShown turns configured IDs into the set that actually appears in a
+// calendar list, expanding the primary alias to whichever calendar is flagged
+// as the default.
+func ResolveShown(ids []string, calendars []Calendar) map[string]bool {
+	out := make(map[string]bool, len(ids))
+
+	for _, id := range ids {
+		if id != PrimaryAlias {
+			out[id] = true
+
+			continue
+		}
+
+		for _, c := range calendars {
+			if c.Primary {
+				out[c.ID] = true
+			}
+		}
+	}
+
+	return out
 }

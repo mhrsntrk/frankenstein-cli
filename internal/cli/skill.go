@@ -131,7 +131,20 @@ func newTUICmd(app *App) *cobra.Command {
 				}
 			}
 
-			return tui.Run(tui.New(st, syncer, p, sc, ps, cal, todos, cfg))
+			// The picker writes its choice back to the config, so which
+			// calendars you look at survives a restart.
+			saveCalendars := func(ids []string) error {
+				current, err := app.Config()
+				if err != nil {
+					return err
+				}
+
+				current.Calendar.CalendarIDs = ids
+
+				return saveConfig(current)
+			}
+
+			return tui.Run(tui.New(st, syncer, p, sc, ps, cal, todos, saveCalendars, cfg))
 		},
 	}
 }

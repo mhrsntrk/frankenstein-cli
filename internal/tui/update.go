@@ -13,6 +13,7 @@ import (
 	"github.com/mhrsntrk/frankenstein-cli/internal/config"
 	fmail "github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
 )
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -85,6 +86,30 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case eventsMsg:
 		m.events, m.calErr = msg.events, msg.err
+
+		return m, nil
+
+	case calendarsMsg:
+		if m.picker != nil {
+			m.picker.calendars = msg
+
+			// "primary" is an alias the list answers to with a real address,
+			// so the configured set is resolved against it rather than
+			// compared literally.
+			m.picker.shown = fcal.ResolveShown(m.calendarIDs, msg)
+
+			if len(m.picker.shown) == 0 {
+				for _, c := range msg {
+					if c.Primary {
+						m.picker.shown[c.ID] = true
+					}
+				}
+			}
+		}
+
+		for _, c := range msg {
+			m.calColours[c.ID] = heyui.ColourFor(c.Color)
+		}
 
 		return m, nil
 
@@ -185,6 +210,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.band != nil && (m.view == viewHabits || m.view == viewTodos) {
 		return m.handleBandKey(msg)
+	}
+
+	if m.picker != nil && m.view == viewCalendars {
+		return m.handleCalendarPickerKey(msg)
 	}
 
 	if m.view == viewMovePicker {
@@ -484,6 +513,11 @@ func (m *Model) calendarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 
 	case "s":
 		model, cmd := m.openTodos()
+
+		return model, cmd, true
+
+	case "g":
+		model, cmd := m.openCalendars()
 
 		return model, cmd, true
 
@@ -918,10 +952,12 @@ func (m *Model) goBack() (tea.Model, tea.Cmd) {
 		m.view = viewBoxes
 		m.filter.SetValue("")
 		m.list.ClearSelection()
-	case viewScreener, viewCompose, viewMovePicker, viewEventForm, viewHabits, viewTodos:
+	case viewScreener, viewCompose, viewMovePicker, viewEventForm,
+		viewHabits, viewTodos, viewCalendars:
 		m.compose = nil
 		m.eventForm = nil
 		m.band = nil
+		m.picker = nil
 		m.pop()
 	}
 

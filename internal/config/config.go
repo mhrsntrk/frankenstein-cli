@@ -74,8 +74,27 @@ type CalendarConfig struct {
 	ClientID     string `json:"client_id,omitempty"`
 	ClientSecret string `json:"client_secret,omitempty"`
 
-	// CalendarID defaults to "primary".
+	// CalendarID is the calendar new events are written to. It defaults to
+	// "primary".
 	CalendarID string `json:"calendar_id,omitempty"`
+
+	// CalendarIDs are the calendars shown. Empty means just CalendarID, which
+	// is what an older config looks like.
+	CalendarIDs []string `json:"calendar_ids,omitempty"`
+}
+
+// Shown is the set of calendars to display, falling back to the single one an
+// older config knows about.
+func (c CalendarConfig) Shown() []string {
+	if len(c.CalendarIDs) > 0 {
+		return c.CalendarIDs
+	}
+
+	if c.CalendarID != "" {
+		return []string{c.CalendarID}
+	}
+
+	return []string{"primary"}
 }
 
 // Defaults returns a config with every zero value filled in.

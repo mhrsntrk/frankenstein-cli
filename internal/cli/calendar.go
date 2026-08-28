@@ -225,20 +225,31 @@ func newCalendarsCmd(app *App) *cobra.Command {
 				return err
 			}
 
+			cfg, _ := app.Config()
+
+			shown := fcal.ResolveShown(cfg.Calendar.Shown(), cals)
+
 			return app.Emit(cals, func(w io.Writer) {
 				t := Table(w)
-				fmt.Fprintln(t, "ID\tNAME\tPRIMARY")
+				fmt.Fprintln(t, "SHOWN\tNAME\tCOLOUR\tID")
 
 				for _, c := range cals {
-					primary := ""
-					if c.Primary {
-						primary = "yes"
+					mark := ""
+					if shown[c.ID] {
+						mark = "x"
 					}
 
-					fmt.Fprintf(t, "%s\t%s\t%s\n", truncate(c.ID, 40), c.Name, primary)
+					name := c.Name
+					if c.Primary {
+						name += " (default)"
+					}
+
+					fmt.Fprintf(t, "%s\t%s\t%s\t%s\n",
+						mark, truncate(name, 34), c.Color, truncate(c.ID, 44))
 				}
 
 				t.Flush()
+				fmt.Fprintln(w, "\nPress g in the TUI to choose which are shown.")
 			})
 		},
 	}
@@ -272,7 +283,14 @@ func newEventsCmd(app *App) *cobra.Command {
 				}
 			}
 
-			events, err := p.Events(ctx, calID, start, start.AddDate(0, 0, days))
+			cfg, _ := app.Config()
+
+			ids := cfg.Calendar.Shown()
+			if calID != "" && len(cfg.Calendar.CalendarIDs) == 0 {
+				ids = []string{calID}
+			}
+
+			events, err := p.EventsFrom(ctx, ids, start, start.AddDate(0, 0, days))
 			if err != nil {
 				return err
 			}

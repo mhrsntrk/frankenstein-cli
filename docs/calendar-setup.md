@@ -116,6 +116,7 @@ In the TUI the calendar is hey-cli's own grid:
 | `D` | delete it |
 | `b` | habits, which are local |
 | `s` | todos, which are Google Tasks |
+| `g` | which calendars are shown |
 | `tab` | next section |
 
 The habits band above the grid and the "Sometime this week" ribbon below it
@@ -132,10 +133,25 @@ Tasks list `frankenstein todo` uses.
 `frankenstein logout` clears the token along with the Proton session. The
 client ID stays in the config so you do not have to make another one.
 
-To use a calendar other than your default:
+## Several calendars at once
+
+Press `g` in the calendar to choose which are drawn. Space shows or hides one,
+`a` shows all, `w` shows only the one under the cursor. The choice is written
+to the config, so it survives a restart.
+
+Each calendar keeps the colour Google gives it, matched to the nearest one the
+terminal palette can draw. Events from different calendars at the same time sit
+side by side in the day view and stack in the week, so an overlap reads as two
+things rather than one covering the other.
 
 ```sh
-frankenstein calendar list                     # find its ID
+frankenstein calendar list     # which are shown, and in what colour
+```
+
+New events are written to the calendar in `calendar_id`, which stays your
+default unless you change it:
+
+```sh
 frankenstein calendar setup --calendar <id>
 ```
 

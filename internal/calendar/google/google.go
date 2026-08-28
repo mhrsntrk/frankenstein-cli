@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/zalando/go-keyring"
@@ -248,6 +250,7 @@ func (p *Provider) Calendars(ctx context.Context) ([]fcal.Calendar, error) {
 			Name:     c.Summary,
 			Primary:  c.Primary,
 			TimeZone: c.TimeZone,
+			Color:    c.BackgroundColor,
 		})
 	}
 
@@ -330,6 +333,76 @@ func parseWhen(t *calendar.EventDateTime) (time.Time, bool, error) {
 	parsed, err := time.ParseInLocation("2006-01-02", t.Date, time.Local)
 
 	return parsed, true, err
+}
+
+// EventsFrom reads several calendars and merges them in time order.
+//
+// The calendars are read in parallel: a person with six of them would
+// otherwise wait for six round trips in a row every time the week moved. One
+// calendar failing does not lose the others -- a shared calendar that has been
+// revoked should not empty the whole view -- but the error is kept so the
+// caller can say so.
+func (p *Provider) EventsFrom(ctx context.Context, calendarIDs []string, from, to time.Time) ([]fcal.Event, error) {
+	if len(calendarIDs) == 0 {
+		return p.Events(ctx, "", from, to)
+	}
+
+	colours := map[string]string{}
+
+	if cals, err := p.Calendars(ctx); err == nil {
+		for _, c := range cals {
+			colours[c.ID] = c.Color
+		}
+	}
+
+	type result struct {
+		events []fcal.Event
+		err    error
+	}
+
+	results := make([]result, len(calendarIDs))
+
+	var wg sync.WaitGroup
+
+	for i, id := range calendarIDs {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			events, err := p.Events(ctx, id, from, to)
+			for j := range events {
+				events[j].CalendarID = id
+				events[j].Color = colours[id]
+			}
+
+			results[i] = result{events: events, err: err}
+		}()
+	}
+
+	wg.Wait()
+
+	var (
+		all      []fcal.Event
+		firstErr error
+	)
+
+	for _, r := range results {
+		if r.err != nil && firstErr == nil {
+			firstErr = r.err
+		}
+
+		all = append(all, r.events...)
+	}
+
+	sort.Slice(all, func(i, j int) bool { return all[i].Start.Before(all[j].Start) })
+
+	// Only a total failure is worth reporting: some events beat none.
+	if len(all) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+
+	return all, nil
 }
 
 func (p *Provider) CreateEvent(ctx context.Context, calendarID string, d fcal.EventDraft) (fcal.Event, error) {

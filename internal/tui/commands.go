@@ -173,7 +173,7 @@ func (m *Model) loadEvents() tea.Cmd {
 	start = start.AddDate(0, 0, -1)
 
 	return bg(20*time.Second, func(ctx context.Context) tea.Msg {
-		events, err := m.cal.Events(ctx, m.calendarID, start, start.AddDate(0, 0, days))
+		events, err := m.cal.EventsFrom(ctx, m.calendarIDs, start, start.AddDate(0, 0, days))
 		if err != nil {
 			// A calendar failure must not take the mail client down with it,
 			// but it must not read as an empty week either: that sent someone

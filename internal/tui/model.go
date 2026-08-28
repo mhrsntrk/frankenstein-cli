@@ -77,6 +77,7 @@ const (
 	viewEventForm
 	viewHabits
 	viewTodos
+	viewCalendars
 )
 
 // section is the top-level area, switched with tab.
@@ -141,6 +142,14 @@ type Model struct {
 	cal        fcal.Provider
 	calendarID string
 
+	// calendarIDs are the calendars drawn, and calColours what each draws in.
+	calendarIDs []string
+	calColours  map[string]string
+
+	// saveCalendars persists the picker's choice. Supplied by the command
+	// layer, which owns the config file.
+	saveCalendars func([]string) error
+
 	cfg config.Config
 
 	view    view
@@ -198,6 +207,7 @@ type Model struct {
 	compose   *composeState
 	eventForm *eventForm
 	band      *bandEditor
+	picker    *calendarPicker
 
 	// moveTargets is the box picker's list, shown over the thread list.
 	moveTargets []mail.Box
@@ -239,6 +249,7 @@ func New(
 	ps *personal.Store,
 	cal fcal.Provider,
 	todos Todos,
+	saveCalendars func([]string) error,
 	cfg config.Config,
 ) *Model {
 	filter := textinput.New()
@@ -256,6 +267,9 @@ func New(
 		screener:       sc,
 		personal:       ps,
 		cal:            cal,
+		calendarIDs:    cfg.Calendar.Shown(),
+		calColours:     map[string]string{},
+		saveCalendars:  saveCalendars,
 		todos:          todos.List,
 		addTodoFn:      todos.Add,
 		completeTodoFn: todos.Complete,

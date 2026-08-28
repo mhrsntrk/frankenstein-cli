@@ -2,9 +2,12 @@ package tui
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
@@ -25,6 +28,26 @@ func (c *fakeCal) Calendars(context.Context) ([]fcal.Calendar, error) {
 
 func (c *fakeCal) Events(context.Context, string, time.Time, time.Time) ([]fcal.Event, error) {
 	return c.events, c.err
+}
+
+func (c *fakeCal) EventsFrom(_ context.Context, ids []string, _, _ time.Time) ([]fcal.Event, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+
+	// Tag each event with the first calendar asked for, which is enough for a
+	// test to tell the colour mapping worked.
+	out := append([]fcal.Event(nil), c.events...)
+
+	if len(ids) > 0 {
+		for i := range out {
+			if out[i].CalendarID == "" {
+				out[i].CalendarID = ids[0]
+			}
+		}
+	}
+
+	return out, nil
 }
 
 func (c *fakeCal) CreateEvent(_ context.Context, _ string, d fcal.EventDraft) (fcal.Event, error) {
@@ -379,5 +402,160 @@ func TestTodosManagerAddsAndCompletes(t *testing.T) {
 
 	if len(completed) != 1 {
 		t.Errorf("completed = %v", completed)
+	}
+}
+
+// TestDumpCalendar prints the calendar so the layout can be looked at rather
+// than guessed about. DUMP_VIEW=1 go test ./internal/tui -run TestDumpCalendar -v
+func TestDumpCalendar(t *testing.T) {
+	if os.Getenv("DUMP_VIEW") == "" {
+		t.Skip("set DUMP_VIEW=1 to print the rendered calendar")
+	}
+
+	h, _ := calHarness(t)
+
+	h.m.calHabits = []heyui.Habit{
+		{ID: 1, Name: "read", Color: "red", Done: []time.Time{time.Now()}},
+	}
+	h.m.calTodos = []heyui.Todo{{ID: 1, Title: "Renew the domain"}}
+	h.m.calColours = map[string]string{"work": "blue", "personal": "green"}
+
+	for i := range h.m.events {
+		if i%2 == 0 {
+			h.m.events[i].CalendarID = "work"
+
+			continue
+		}
+
+		h.m.events[i].CalendarID = "personal"
+	}
+
+	t.Logf("\n%s\n", h.m.View())
+}
+
+func TestCalendarPickerTogglesAndPersists(t *testing.T) {
+	h, _ := calHarness(t)
+
+	var saved [][]string
+
+	h.m.saveCalendars = func(ids []string) error {
+		saved = append(saved, append([]string(nil), ids...))
+
+		return nil
+	}
+
+	h.press(t, "g")
+
+	if h.m.view != viewCalendars {
+		t.Fatalf("g gave view %v, want viewCalendars", h.m.view)
+	}
+
+	h.m.picker.calendars = []fcal.Calendar{
+		{ID: "primary", Name: "Personal", Primary: true, Color: "#0b8043"},
+		{ID: "work", Name: "Work", Color: "#3f51b5"},
+		{ID: "family", Name: "Family", Color: "#d50000"},
+	}
+	h.m.picker.shown = map[string]bool{"primary": true}
+
+	// Show a second one.
+	h.m.picker.idx = 1
+	h.press(t, " ")
+
+	if !h.m.picker.shown["work"] {
+		t.Error("space did not show the calendar")
+	}
+
+	if len(saved) == 0 {
+		t.Fatal("the choice was not persisted")
+	}
+
+	if got := saved[len(saved)-1]; len(got) != 2 {
+		t.Errorf("saved %v, want two calendars", got)
+	}
+
+	// Hide it again.
+	h.press(t, " ")
+
+	if h.m.picker.shown["work"] {
+		t.Error("space did not hide the calendar")
+	}
+
+	// The last one cannot be hidden, or the grid goes blank with no reason.
+	h.m.picker.idx = 0
+	h.press(t, " ")
+
+	if !h.m.picker.shown["primary"] {
+		t.Error("the last showing calendar was hidden")
+	}
+
+	if h.m.err == nil {
+		t.Error("hiding the last calendar said nothing")
+	}
+
+	// a shows all, w shows only the one under the cursor.
+	h.press(t, "a")
+
+	if len(h.m.picker.selected()) != 3 {
+		t.Errorf("a selected %d, want 3", len(h.m.picker.selected()))
+	}
+
+	h.m.picker.idx = 2
+	h.press(t, "w")
+
+	if got := h.m.picker.selected(); len(got) != 1 || got[0] != "family" {
+		t.Errorf("w selected %v, want [family]", got)
+	}
+}
+
+// Each calendar has to draw in a colour a reader recognises, or several at
+// once is unreadable.
+func TestCalendarColoursComeFromTheProvider(t *testing.T) {
+	h, _ := calHarness(t)
+
+	h.press(t, "g")
+	h.drain(t, func() tea.Msg {
+		return calendarsMsg{
+			{ID: "primary", Name: "Personal", Color: "#0b8043"}, // green
+			{ID: "work", Name: "Work", Color: "#3f51b5"},        // blue
+			{ID: "family", Name: "Family", Color: "#d50000"},    // red
+		}
+	})
+
+	for id, want := range map[string]string{
+		"primary": "green",
+		"work":    "blue",
+		"family":  "red",
+	} {
+		if got := h.m.calColours[id]; got != want {
+			t.Errorf("%s mapped to %q, want %q", id, got, want)
+		}
+	}
+
+	// And the colour reaches the event the grid draws.
+	h.m.view = viewCalendars
+
+	if out := h.m.View(); !strings.Contains(out, "Work") {
+		t.Error("the picker does not list the calendars")
+	}
+}
+
+func TestEventsAreFetchedFromEveryShownCalendar(t *testing.T) {
+	h, cal := calHarness(t)
+
+	h.m.calendarIDs = []string{"primary", "work"}
+	h.m.calColours = map[string]string{"primary": "green", "work": "blue"}
+
+	h.drain(t, h.m.loadEvents())
+
+	if len(h.m.events) != len(cal.events) {
+		t.Fatalf("got %d events, want %d", len(h.m.events), len(cal.events))
+	}
+
+	// Every event knows which calendar it came from, which is what the colour
+	// lookup keys on.
+	for _, e := range h.m.events {
+		if e.CalendarID == "" {
+			t.Errorf("%q has no calendar", e.Title)
+		}
 	}
 }

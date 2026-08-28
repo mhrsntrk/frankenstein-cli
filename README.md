@@ -124,7 +124,7 @@ Everything happens here. Press `?` for the full list.
 | `1` `2` `3` | in Calendar: day, week, year |
 | `p` `n` `t` | back, forward, today |
 | `c` `enter` `D` | new event, edit, delete |
-| `b` `s` | habits, todos |
+| `b` `s` `g` | habits, todos, calendars |
 | click | move the cursor, click again to open |
 | wheel | scroll without moving the cursor |
 

@@ -1,8 +1,13 @@
 package heyui
 
 import (
+	"math"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
+
+	"charm.land/lipgloss/v2"
 )
 
 // The exported face of hey-cli's calendar grids.
@@ -157,6 +162,75 @@ func Calendar(
 // Key is the identifier the grid uses to mark an event as selected.
 func Key(e Event) string { return e.recording().key() }
 
+// ColourFor maps a provider's hex colour onto the nearest name in hey-cli's
+// palette.
+//
+// Google gives each calendar a hex colour its owner already recognises, and
+// the grid draws by palette name. Matching on distance keeps a blue calendar
+// blue rather than assigning colours in whatever order they arrived.
+func ColourFor(hex string) string {
+	r, g, b, ok := parseHex(hex)
+	if !ok {
+		return ""
+	}
+
+	best, bestDist := "", math.MaxFloat64
+
+	for _, name := range HabitColours() {
+		pr, pg, pb := paletteRGB(name)
+
+		// Squared distance is enough to rank; the square root would not change
+		// the ordering.
+		d := float64((r-pr)*(r-pr) + (g-pg)*(g-pg) + (b-pb)*(b-pb))
+		if d < bestDist {
+			best, bestDist = name, d
+		}
+	}
+
+	return best
+}
+
+func parseHex(s string) (r, g, b int, ok bool) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "#")
+
+	if len(s) != 6 {
+		return 0, 0, 0, false
+	}
+
+	v, err := strconv.ParseUint(s, 16, 32)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+
+	return int(v>>16) & 0xff, int(v>>8) & 0xff, int(v) & 0xff, true
+}
+
+// paletteRGB is where a palette name sits in RGB, for the distance match.
+// These are the usual terminal ANSI values; a theme may render them
+// differently, which only shifts which name a hex maps to.
+func paletteRGB(name string) (r, g, b int) {
+	switch name {
+	case "blue":
+		return 0, 0, 238
+	case "red":
+		return 205, 0, 0
+	case "gold":
+		return 255, 255, 0
+	case "green":
+		return 0, 205, 0
+	case "teal":
+		return 0, 205, 205
+	case "purple":
+		return 205, 0, 205
+	case "pink":
+		return 255, 85, 255
+	case "brown":
+		return 205, 205, 0
+	default:
+		return 229, 229, 229
+	}
+}
+
 // HabitColours are the palette names a habit's colour may take.
 func HabitColours() []string {
 	out := make([]string, 0, len(heyColors))
@@ -167,4 +241,14 @@ func HabitColours() []string {
 	sort.Strings(out)
 
 	return out
+}
+
+// Swatch is a block of colour, for showing which colour a calendar draws in.
+func Swatch(name string) string {
+	c, ok := heyColors[name]
+	if !ok {
+		return "  "
+	}
+
+	return lipgloss.NewStyle().Foreground(c).Render("██")
 }
