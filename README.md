@@ -121,6 +121,7 @@ Everything happens here. Press `?` for the full list.
 | `e` `u` `s` | mark read, unread, star |
 | `a` `t` `!` `v` | archive, trash, spam, move |
 | `/` | filter |
+| `1` `2` `p` `n` `t` | in Calendar: day, week, back, forward, today |
 | click | move the cursor, click again to open |
 | wheel | scroll without moving the cursor |
 
@@ -152,6 +153,7 @@ frankenstein screener route              # push list rules server-side
 
 frankenstein newsletters                 # volume, unread, trackers, routing
 frankenstein calendar setup                # once, needs your own Google client
+frankenstein calendar list                 # check the APIs are enabled
 frankenstein calendar events --days 7
 frankenstein calendar add "Standup" --start "09:30" --for 30m
 frankenstein todo add "Renew domain" --due 2026-09-15

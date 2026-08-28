@@ -83,7 +83,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case eventsMsg:
-		m.events = msg
+		m.events, m.calErr = msg.events, msg.err
 
 		return m, nil
 
@@ -355,6 +355,32 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, nil
+	}
+
+	// In the calendar the digits pick a grid rather than a box.
+	if m.view == viewCalendar {
+		switch msg.String() {
+		case "1":
+			m.calView, m.calOffset = calendarDay, 0
+
+			return m, m.loadEvents()
+		case "2":
+			m.calView, m.calOffset = calendarWeek, 0
+
+			return m, m.loadEvents()
+		case "n":
+			m.calOffset++
+
+			return m, m.loadEvents()
+		case "p":
+			m.calOffset--
+
+			return m, m.loadEvents()
+		case "t":
+			m.calOffset = 0
+
+			return m, m.loadEvents()
+		}
 	}
 
 	// 1-9 jump straight to a box, which is what keeps every box one keystroke

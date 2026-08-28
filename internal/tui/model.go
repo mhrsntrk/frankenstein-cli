@@ -34,6 +34,14 @@ const (
 	chromeMinimal
 )
 
+// calendarView is which of hey-cli's grids the calendar section draws.
+type calendarView int
+
+const (
+	calendarWeek calendarView = iota
+	calendarDay
+)
+
 // view is which screen is on top.
 type view int
 
@@ -68,7 +76,6 @@ var (
 	errorStyle    = lipgloss.NewStyle().Foreground(heyui.Alert()).Bold(true)
 	statusStyle   = heyui.MutedStyle()
 	keyStyle      = lipgloss.NewStyle().Foreground(heyui.Bright()).Bold(true)
-	sectionStyle  = lipgloss.NewStyle().Foreground(heyui.Primary())
 	bannerStyle   = lipgloss.NewStyle().Reverse(true).Bold(true)
 	okStyle       = lipgloss.NewStyle().Foreground(heyui.Primary()).Bold(true)
 	markStyle     = lipgloss.NewStyle().Foreground(heyui.Primary()).Bold(true)
@@ -138,7 +145,16 @@ type Model struct {
 	bodyLines []string
 	bodyTop   int
 
-	events   []fcal.Event
+	events []fcal.Event
+
+	// calErr is why the calendar is empty, when it is empty for a reason.
+	calErr error
+
+	// calView is which grid is drawn, and calOffset how many days or weeks
+	// away from today it is.
+	calView   calendarView
+	calOffset int
+
 	journal  []personal.JournalEntry
 	extraIdx int
 

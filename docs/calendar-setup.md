@@ -23,12 +23,29 @@ Any name. It is a container for the client, and nobody but you sees it.
 
 ### 2. Enable the two APIs
 
+**This is the step people skip, and skipping it fails later rather than sooner.**
+A project can hold a working OAuth client while the APIs it calls are switched
+off: authorisation succeeds, and every read comes back `403 SERVICE_DISABLED`.
+
 - [Google Calendar API](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com)
 - [Google Tasks API](https://console.cloud.google.com/apis/library/tasks.googleapis.com)
 
 Press **Enable** on each, with your new project selected in the picker at the
-top of the page. Calendar alone is enough if you do not want `frankenstein
-todo`; the todo commands will fail and nothing else will.
+top of the page. Enabling takes a minute or two to propagate; if the first
+read still fails, wait and try again.
+
+Calendar alone is enough if you do not want `frankenstein todo`. The todo
+commands will fail and nothing else will.
+
+To check both took:
+
+```sh
+frankenstein calendar list
+```
+
+A list of calendars means it worked. `Error 403: ... has not been used in
+project ... or it is disabled` means this step is outstanding, and the error
+carries a link straight to the page that fixes it.
 
 ### 3. Set up the consent screen
 
@@ -80,6 +97,22 @@ You are asked to grant:
 All three are **sensitive** in Google's classification. None is *restricted*,
 which is the category (Gmail's scopes, for instance) that would require a paid
 third-party security assessment.
+
+## Using it
+
+```sh
+frankenstein calendar events --days 7      # the next week, as a list
+frankenstein tui                           # then tab to Calendar
+```
+
+In the TUI the calendar is hey-cli's own grid:
+
+| | |
+|---|---|
+| `1` `2` | day, week |
+| `p` `n` | back, forward a period |
+| `t` | back to today |
+| `tab` | next section |
 
 ## Where things end up
 

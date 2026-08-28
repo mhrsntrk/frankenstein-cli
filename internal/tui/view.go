@@ -172,7 +172,11 @@ func (m *Model) locationName() string {
 	case viewCompose:
 		return composeTitle(m.compose)
 	case viewCalendar:
-		return "Calendar"
+		if m.calView == calendarDay {
+			return "Day"
+		}
+
+		return "Week"
 	case viewJournal:
 		return "Journal"
 	default:
@@ -237,6 +241,28 @@ func (m *Model) screenerBanner(w int) string {
 
 	return heyui.Center(
 		bannerStyle.Render(fmt.Sprintf(" Screen %d first-time %s · ctrl+s ", m.pending, noun)), w)
+}
+
+// calendarHint turns Google's wall of JSON into the one sentence that says
+// what to do. Its errors carry the fix in them, buried.
+func calendarHint(err error) string {
+	msg := err.Error()
+
+	if i := strings.Index(msg, "Details:"); i > 0 {
+		msg = msg[:i]
+	}
+
+	if strings.Contains(msg, "has not been used in project") ||
+		strings.Contains(msg, "SERVICE_DISABLED") {
+		return "The Google Calendar API is not enabled on your project. " +
+			"Enable it in the console, wait a minute, and press r."
+	}
+
+	if strings.Contains(msg, "invalid_grant") || strings.Contains(msg, "401") {
+		return "The Google authorisation has expired. Run `frankenstein calendar setup` again."
+	}
+
+	return strings.TrimSpace(strings.TrimPrefix(msg, "list events: "))
 }
 
 func (m *Model) agendaLine() string {
@@ -332,6 +358,11 @@ func (m *Model) keyBindings() []keyBinding {
 		}
 	case viewMovePicker:
 		return []keyBinding{{"up/down", "choose"}, {"enter", "move"}, {"esc", "cancel"}}
+	case viewCalendar:
+		return []keyBinding{
+			{"1", "day"}, {"2", "week"}, {"p/n", "back, forward"}, {"t", "today"},
+			{"tab", "section"}, {"r", "reload"}, {"?", "help"}, {"q", "quit"},
+		}
 	default:
 		return []keyBinding{
 			{"j/k", "navigate"}, {"enter", "open"}, {"tab", "section"}, {"r", "sync"},
@@ -685,53 +716,63 @@ func (m *Model) movePickerView() string {
 
 // --- calendar and journal ---------------------------------------------------
 
+// calendarView draws hey-cli's own week or day grid.
 func (m *Model) calendarView() string {
 	if m.cal == nil {
 		return dimStyle.Render("  Calendar is not configured. Run `frankenstein calendar setup`.")
 	}
 
-	if len(m.events) == 0 {
-		return dimStyle.Render("  Nothing scheduled in the next week.")
+	if m.calErr != nil {
+		return errorStyle.Render("  The calendar could not be read.") + "\n\n" +
+			dimStyle.Render("  "+truncateStr(calendarHint(m.calErr), maxInt(20, m.contentWidth()-2)))
 	}
 
-	var b strings.Builder
+	events := make([]heyui.Event, 0, len(m.events))
 
-	var day string
-
-	rows := 0
-
-	for i, e := range m.events {
-		if rows >= maxInt(1, m.pageSize()-1) {
-			break
-		}
-
-		d := e.Start.Format("Monday 2 January")
-		if d != day {
-			b.WriteString(sectionStyle.Render(d))
-			b.WriteString("\n")
-
-			day = d
-			rows++
-		}
-
-		when := fmt.Sprintf("%s-%s", e.Start.Format("15:04"), e.End.Format("15:04"))
-		if e.AllDay {
-			when = "all day"
-		}
-
-		line := fmt.Sprintf("  %-13s %s", when, truncateStr(e.Title, maxInt(10, m.contentWidth()-20)))
-
-		if i == m.extraIdx {
-			line = selectedStyle.Render(padTo(line, m.contentWidth()))
-		}
-
-		b.WriteString(line)
-		b.WriteString("\n")
-
-		rows++
+	for _, e := range m.events {
+		events = append(events, heyui.Event{
+			ID:       e.ID,
+			Title:    e.Title,
+			AllDay:   e.AllDay,
+			StartsAt: e.Start,
+			EndsAt:   e.End,
+			Location: e.Location,
+			Notes:    e.Notes,
+		})
 	}
 
-	return b.String()
+	kind := heyui.CalendarWeek
+	if m.calView == calendarDay {
+		kind = heyui.CalendarDay
+	}
+
+	selected := ""
+	if i := m.extraIdx; i >= 0 && i < len(events) {
+		selected = heyui.Key(events[i])
+	}
+
+	hint := ""
+	if len(events) == 0 {
+		hint = "Nothing scheduled."
+	}
+
+	return heyui.Calendar(kind, events, m.calAnchor(), time.Monday,
+		m.contentWidth(), m.pageSize(), hint, selected, true)
+}
+
+// calAnchor is the day or week being shown.
+func (m *Model) calAnchor() time.Time {
+	base := time.Now()
+
+	if m.calOffset == 0 {
+		return base
+	}
+
+	if m.calView == calendarDay {
+		return base.AddDate(0, 0, m.calOffset)
+	}
+
+	return base.AddDate(0, 0, 7*m.calOffset)
 }
 
 func (m *Model) journalView() string {

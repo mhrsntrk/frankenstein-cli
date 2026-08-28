@@ -114,23 +114,3 @@ func dropSpacingMark(r rune) rune {
 	}
 	return r
 }
-
-// truncateStr shortens a string to maxLen display columns.
-//
-// Copied from hey-cli internal/tui/calendar_views.go, where the nav renderers
-// expect to find it.
-func truncateStr(s string, maxLen int) string {
-	if maxLen <= 0 {
-		return ""
-	}
-
-	if displayWidth(s) <= maxLen {
-		return s
-	}
-
-	if maxLen <= 1 {
-		return "…"
-	}
-
-	return fitGraphemes(s, maxLen-1) + "…"
-}

@@ -21,7 +21,12 @@ type boxesMsg []mail.Box
 type convsMsg []mail.Conversation
 type threadMsg mail.Thread
 type bodyMsg mail.Body
-type eventsMsg []fcal.Event
+
+// eventsMsg carries the week, or why there isn't one.
+type eventsMsg struct {
+	events []fcal.Event
+	err    error
+}
 type journalMsg []personal.JournalEntry
 type sendersMsg []screener.Sender
 type syncedMsg fsync.Result
@@ -148,19 +153,32 @@ func (m *Model) loadEvents() tea.Cmd {
 		return nil
 	}
 
-	days := 7
+	// Fetch around whatever the grid is showing, with a day either side so an
+	// event that starts before the window still draws its tail inside it.
+	anchor := m.calAnchor()
+	start := time.Date(anchor.Year(), anchor.Month(), anchor.Day(), 0, 0, 0, 0, time.Local)
+
+	days := 8
+
+	if m.calView == calendarWeek || m.view != viewCalendar {
+		// Back up to the Monday the grid starts on.
+		back := (int(start.Weekday()) + 6) % 7
+		start = start.AddDate(0, 0, -back)
+		days = 9
+	}
+
+	start = start.AddDate(0, 0, -1)
 
 	return bg(20*time.Second, func(ctx context.Context) tea.Msg {
-		now := time.Now()
-		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-
 		events, err := m.cal.Events(ctx, m.calendarID, start, start.AddDate(0, 0, days))
 		if err != nil {
-			// A calendar failure must not take the mail client down with it.
-			return eventsMsg(nil)
+			// A calendar failure must not take the mail client down with it,
+			// but it must not read as an empty week either: that sent someone
+			// looking for missing events when the API was simply switched off.
+			return eventsMsg{err: err}
 		}
 
-		return eventsMsg(events)
+		return eventsMsg{events: events}
 	})
 }
 

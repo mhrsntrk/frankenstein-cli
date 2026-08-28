@@ -28,3 +28,15 @@ them, and HEY is their trademark.
 Mail is reached through go-proton-api, gopenpgp and go-crypto, published by
 Proton AG. This project is an independent client and is not affiliated with,
 endorsed by, or supported by Proton AG.
+
+Later additions from the same source, on the same terms:
+
+  internal/tui/heyui/calendar_views.go   the day and week grids
+  internal/tui/heyui/calendar_types.go   the Recording row type
+  internal/tui/heyui/calendar_helpers.go the habit palette and time format
+  internal/tui/heyui/nav.go              the rule, nav row and top rule
+  internal/tui/heyui/width.go            grapheme-aware column widths
+  internal/habit/                        habit icon and colour values
+
+renderTopRule is the one copied function with a deliberate change: it hardcoded
+the HEY wordmark, and takes a title instead.
