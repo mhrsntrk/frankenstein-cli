@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 )
 
 // AppName is the binary and config directory name.
@@ -180,6 +182,18 @@ func JournalDir() (string, error) {
 	return out, nil
 }
 
+// NotesDir is where quick notes are written as markdown. The directory is
+// created lazily by the notes store, so a machine that never writes one never
+// grows the folder.
+func NotesDir() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(dir, "notes"), nil
+}
+
 // Load reads the config, filling in defaults for anything unset. A missing
 // file is not an error.
 func Load() (Config, error) {
@@ -203,7 +217,9 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
-	// Re-apply defaults for fields the file left empty.
+	// Re-apply defaults for fields the file left empty. A zero or negative
+	// size or interval is meaningless, so it is silently treated as unset
+	// rather than rejected; hand-editing the file should never brick the tool.
 	d := Defaults()
 
 	if cfg.APIHost == "" {
@@ -214,11 +230,11 @@ func Load() (Config, error) {
 		cfg.AppVersion = d.AppVersion
 	}
 
-	if cfg.BodyCacheSize == 0 {
+	if cfg.BodyCacheSize <= 0 {
 		cfg.BodyCacheSize = d.BodyCacheSize
 	}
 
-	if cfg.SyncInterval == 0 {
+	if cfg.SyncInterval <= 0 {
 		cfg.SyncInterval = d.SyncInterval
 	}
 
@@ -230,6 +246,14 @@ func Load() (Config, error) {
 }
 
 // Save writes the config, creating the directory if needed.
+//
+// Only values that differ from Defaults reach the file. Load fills every
+// gap, so writing the defaults back would freeze them: a config saved today
+// would pin today's api_host and app_version forever, and existing users
+// would never pick up a new binary's bump (the app-version pin above is
+// exactly the field that has to move). Keys this binary does not know about
+// are carried over from the existing file untouched, so a newer binary's
+// fields survive a save by an older one.
 func Save(cfg Config) error {
 	path, err := Path()
 	if err != nil {
@@ -240,7 +264,27 @@ func Save(cfg Config) error {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
-	b, err := json.MarshalIndent(cfg, "", "  ")
+	// Start from whatever is on disk so unknown keys survive the round trip.
+	out := map[string]any{}
+	if b, err := os.ReadFile(path); err == nil {
+		if json.Unmarshal(b, &out) != nil {
+			out = map[string]any{}
+		}
+	}
+
+	cur, err := toMap(cfg)
+	if err != nil {
+		return err
+	}
+
+	def, err := toMap(Defaults())
+	if err != nil {
+		return err
+	}
+
+	mergeKnown(out, cur, def, reflect.TypeOf(cfg))
+
+	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -249,5 +293,70 @@ func Save(cfg Config) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 
+	// WriteFile only applies the mode to a new file. The config can hold the
+	// calendar client secret, so tighten a pre-existing looser file too.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("chmod config: %w", err)
+	}
+
 	return nil
+}
+
+// toMap round-trips a config through JSON so it can be compared and merged
+// key by key.
+func toMap(cfg Config) (map[string]any, error) {
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+
+	return m, nil
+}
+
+// mergeKnown rewrites out's known fields from cfg, dropping any whose value
+// matches def so the file only records what the user actually set. Keys the
+// struct does not declare are left alone. Nested structs are merged the same
+// way, field by field, so overriding one calendar field does not freeze the
+// rest.
+func mergeKnown(out, cfg, def map[string]any, t reflect.Type) {
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			continue
+		}
+
+		if f.Type.Kind() == reflect.Struct {
+			sub, _ := out[name].(map[string]any)
+			if sub == nil {
+				sub = map[string]any{}
+			}
+
+			cs, _ := cfg[name].(map[string]any)
+			ds, _ := def[name].(map[string]any)
+			mergeKnown(sub, cs, ds, f.Type)
+
+			if len(sub) == 0 {
+				delete(out, name)
+			} else {
+				out[name] = sub
+			}
+
+			continue
+		}
+
+		v, ok := cfg[name]
+		if !ok || reflect.DeepEqual(v, def[name]) {
+			delete(out, name)
+			continue
+		}
+
+		out[name] = v
+	}
 }
