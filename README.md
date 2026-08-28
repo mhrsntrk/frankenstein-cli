@@ -81,8 +81,9 @@ frankenstein screener setup   # create the four labels in Proton
 frankenstein tui
 ```
 
-The calendar and todos are a separate, optional step. They need a Google OAuth
-client of your own, which takes about five minutes to create:
+The calendar is a separate, optional step. It needs a Google OAuth client of
+your own, which takes about five minutes to create. Todos, habits and the
+journal are local and need none of it:
 
 ```sh
 frankenstein calendar setup
@@ -123,7 +124,7 @@ Everything happens here. Press `?` for the full list.
 | `/` | filter |
 | `1` `2` `3` | in Calendar: day, week, year |
 | `p` `n` `t` | back, forward, today |
-| `c` `enter` `D` | new event, edit, delete |
+| `c` `enter` `e` `D` | new event, read, edit, delete |
 | `b` `s` `g` | habits, todos, calendars |
 | click | move the cursor, click again to open |
 | wheel | scroll without moving the cursor |
@@ -159,7 +160,8 @@ frankenstein calendar setup                # once, needs your own Google client
 frankenstein calendar list                 # check the APIs are enabled
 frankenstein calendar events --days 7
 frankenstein calendar add "Standup" --start "09:30" --for 30m
-frankenstein todo add "Renew domain" --due 2026-09-15
+frankenstein todo add "Renew domain" --due "friday 17:00"   # local, no Google
+frankenstein todo list
 frankenstein habit check read
 frankenstein time start frankenstein
 frankenstein journal write "..." --title "Today"
@@ -201,7 +203,7 @@ internal/store            SQLite warm cache
 internal/sync             backfill, then incremental event deltas
 internal/screener         the HEY layer
 internal/tui              Bubble Tea client
-internal/calendar/google  Google Calendar and Tasks
+internal/calendar/google  Google Calendar
 internal/personal         habits, time tracking, journal
 ```
 
@@ -345,7 +347,8 @@ Mail is powered by [**Proton Mail**](https://proton.me) through
 AG. This project is an independent client and is not affiliated with, endorsed
 by, or supported by Proton AG. Please do not raise issues about it with them.
 
-Calendar and todos use Google Calendar and Google Tasks. Built with
+The calendar uses Google Calendar. Todos, habits and the journal are local.
+Built with
 [Bubble Tea](https://github.com/charmbracelet/bubbletea),
 [Cobra](https://github.com/spf13/cobra) and
 [modernc.org/sqlite](https://modernc.org/sqlite).

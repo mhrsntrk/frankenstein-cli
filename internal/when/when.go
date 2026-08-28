@@ -20,15 +20,17 @@ func Parse(s string) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	now := time.Now()
 
-	switch strings.ToLower(s) {
-	case "", "now":
+	if s == "" || strings.EqualFold(s, "now") {
 		return now, nil
-	case "today":
-		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local), nil
-	case "tomorrow":
-		return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.Local), nil
-	case "yesterday":
-		return time.Date(now.Year(), now.Month(), now.Day()-1, 0, 0, 0, 0, time.Local), nil
+	}
+
+	// A named day, optionally with a time after it. The time is split off
+	// first because "tomorrow" and "tomorrow 09:00" are the same thought, and
+	// only the first of them used to parse.
+	if day, clock, ok := splitDayAndTime(s); ok {
+		if base, ok := namedDay(day, now); ok {
+			return at(base, clock), nil
+		}
 	}
 
 	for _, layout := range []string{
@@ -50,7 +52,78 @@ func Parse(s string) (time.Time, error) {
 		return t, nil
 	}
 
-	return time.Time{}, fmt.Errorf("could not read %q as a date; try 2006-01-02 15:04", s)
+	return time.Time{}, fmt.Errorf(
+		"could not read %q as a date; try 2006-01-02 15:04, 14:00, tomorrow, or friday 17:00", s)
+}
+
+// splitDayAndTime pulls a trailing HH:MM off a named day.
+func splitDayAndTime(s string) (day string, clock time.Duration, ok bool) {
+	fields := strings.Fields(s)
+
+	switch len(fields) {
+	case 1:
+		return fields[0], -1, true
+	case 2:
+		t, err := time.Parse("15:04", fields[1])
+		if err != nil {
+			return "", 0, false
+		}
+
+		return fields[0], time.Duration(t.Hour())*time.Hour +
+			time.Duration(t.Minute())*time.Minute, true
+	}
+
+	return "", 0, false
+}
+
+// namedDay resolves today, tomorrow, yesterday and the weekday names.
+//
+// A weekday means the next one to come, and never today: somebody who writes
+// "friday" on a Friday afternoon means the Friday ahead, not the morning that
+// has already gone.
+func namedDay(name string, now time.Time) (time.Time, bool) {
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+
+	switch strings.ToLower(name) {
+	case "today":
+		return midnight, true
+	case "tomorrow":
+		return midnight.AddDate(0, 0, 1), true
+	case "yesterday":
+		return midnight.AddDate(0, 0, -1), true
+	}
+
+	weekdays := map[string]time.Weekday{
+		"sunday": time.Sunday, "sun": time.Sunday,
+		"monday": time.Monday, "mon": time.Monday,
+		"tuesday": time.Tuesday, "tue": time.Tuesday, "tues": time.Tuesday,
+		"wednesday": time.Wednesday, "wed": time.Wednesday,
+		"thursday": time.Thursday, "thu": time.Thursday, "thurs": time.Thursday,
+		"friday": time.Friday, "fri": time.Friday,
+		"saturday": time.Saturday, "sat": time.Saturday,
+	}
+
+	want, ok := weekdays[strings.ToLower(name)]
+	if !ok {
+		return time.Time{}, false
+	}
+
+	delta := (int(want) - int(midnight.Weekday()) + 7) % 7
+	if delta == 0 {
+		delta = 7
+	}
+
+	return midnight.AddDate(0, 0, delta), true
+}
+
+// at puts a clock time on a day. A negative clock means the day was given
+// without one, which stays at midnight.
+func at(day time.Time, clock time.Duration) time.Time {
+	if clock < 0 {
+		return day
+	}
+
+	return day.Add(clock)
 }
 
 // FormatDuration renders a length the way someone would type it back.

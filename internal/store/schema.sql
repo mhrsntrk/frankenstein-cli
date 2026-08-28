@@ -154,6 +154,21 @@ CREATE TABLE IF NOT EXISTS time_entries (
 
 CREATE INDEX IF NOT EXISTS idx_time_entries_started ON time_entries(started DESC);
 
+-- Todos are local. They were Google Tasks first, which meant the calendar's
+-- todo ribbon needed an authorised Google account before it could show
+-- anything, and a list of personal reminders left the machine to do it.
+CREATE TABLE IF NOT EXISTS todos (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    title     TEXT NOT NULL,
+    notes     TEXT NOT NULL DEFAULT '',
+    due       INTEGER,
+    done_at   INTEGER,
+    created   INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_todos_done ON todos(done_at);
+
 -- Journal entries live as markdown on disk; this table is only the index.
 CREATE TABLE IF NOT EXISTS journal (
     day     TEXT PRIMARY KEY,

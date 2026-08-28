@@ -306,3 +306,120 @@ func TestJournalWriteAppendsAndIndexes(t *testing.T) {
 		t.Error("reading an unwritten day should fail")
 	}
 }
+
+func TestTodoLifecycle(t *testing.T) {
+	ctx := context.Background()
+	ps, _ := setup(t)
+
+	if _, err := ps.AddTodo(ctx, "  ", nil, ""); err == nil {
+		t.Error("a blank title was accepted")
+	}
+
+	soon := time.Now().Add(24 * time.Hour)
+
+	later, err := ps.AddTodo(ctx, "Renew the domain", &soon, "before it lapses")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	undated, err := ps.AddTodo(ctx, "Read the Proton docs", nil, "")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	open, err := ps.Todos(ctx, false)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	if len(open) != 2 {
+		t.Fatalf("open = %d, want 2", len(open))
+	}
+
+	// A deadline is the stronger claim, so a dated todo sorts first.
+	if open[0].Title != "Renew the domain" {
+		t.Errorf("first open todo is %q, want the dated one", open[0].Title)
+	}
+
+	if open[0].Notes != "before it lapses" {
+		t.Errorf("notes = %q", open[0].Notes)
+	}
+
+	if open[0].Due == nil || open[0].Due.Unix() != soon.Unix() {
+		t.Errorf("due = %v, want %v", open[0].Due, soon)
+	}
+
+	if err := ps.CompleteTodo(ctx, later.ID, true); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	open, _ = ps.Todos(ctx, false)
+	if len(open) != 1 || open[0].ID != undated.ID {
+		t.Errorf("after completing one, open = %+v", open)
+	}
+
+	all, _ := ps.Todos(ctx, true)
+	if len(all) != 2 {
+		t.Fatalf("all = %d, want 2", len(all))
+	}
+
+	// Done ones sort to the bottom.
+	if !all[len(all)-1].Done() {
+		t.Error("a completed todo did not sort last")
+	}
+
+	// Reopening puts it back.
+	if err := ps.CompleteTodo(ctx, later.ID, false); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+
+	if open, _ = ps.Todos(ctx, false); len(open) != 2 {
+		t.Errorf("after reopening, open = %d, want 2", len(open))
+	}
+
+	if err := ps.DeleteTodo(ctx, later.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	if open, _ = ps.Todos(ctx, false); len(open) != 1 {
+		t.Errorf("after deleting, open = %d, want 1", len(open))
+	}
+
+	// Acting on a todo that is not there is an error, not a silent no-op.
+	if err := ps.CompleteTodo(ctx, 9999, true); err == nil {
+		t.Error("completing a missing todo succeeded")
+	}
+
+	if err := ps.DeleteTodo(ctx, 9999); err == nil {
+		t.Error("deleting a missing todo succeeded")
+	}
+}
+
+func TestTodoOverdueAndByTitle(t *testing.T) {
+	ctx := context.Background()
+	ps, _ := setup(t)
+
+	past := time.Now().Add(-48 * time.Hour)
+
+	if _, err := ps.AddTodo(ctx, "File the tax return", &past, ""); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	got, err := ps.TodoByTitle(ctx, "File the tax return")
+	if err != nil {
+		t.Fatalf("by title: %v", err)
+	}
+
+	if !got.Overdue() {
+		t.Error("a todo two days past its date is not overdue")
+	}
+
+	if err := ps.CompleteTodo(ctx, got.ID, true); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	// TodoByTitle only looks at open todos, so a completed one is gone from it.
+	if _, err := ps.TodoByTitle(ctx, "File the tax return"); err == nil {
+		t.Error("a completed todo was still found by title")
+	}
+}

@@ -41,7 +41,7 @@ func (m *Model) openHabits() (tea.Model, tea.Cmd) {
 
 func (m *Model) openTodos() (tea.Model, tea.Cmd) {
 	if m.todos == nil {
-		m.err = fmt.Errorf("todos need the Google account; run `frankenstein calendar setup`")
+		m.err = fmt.Errorf("todos are not available in this session")
 
 		return m, nil
 	}

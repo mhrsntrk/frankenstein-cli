@@ -162,16 +162,15 @@ func newCalendarSetupCmd(app *App) *cobra.Command {
 // Each step carries its own URL. Google renames the console's sections often
 // enough that directions by menu name go stale; the URLs have not moved.
 const googleClientHelp = `
-The calendar and todos use Google, and Google needs an OAuth client to let
-anything in. This tool ships without one on purpose, so it uses yours. Five
-minutes, once.
+The calendar uses Google, and Google needs an OAuth client to let anything in.
+This tool ships without one on purpose, so it uses yours. Five minutes, once.
+(Todos are local and need none of this.)
 
   1. Make a project
      https://console.cloud.google.com/projectcreate
 
-  2. Enable the two APIs it calls
+  2. Enable the API it calls
      https://console.cloud.google.com/apis/library/calendar-json.googleapis.com
-     https://console.cloud.google.com/apis/library/tasks.googleapis.com
 
   3. Set up the consent screen, choosing "External"
      https://console.cloud.google.com/auth/overview
@@ -184,8 +183,8 @@ minutes, once.
 
   5. Paste the two values below.
 
-You will be asked to grant read and write on your calendar and your tasks, and
-read on your calendar list. Nothing else.
+You will be asked to grant read and write on your events and read on your
+calendar list. Nothing else.
 
 Google will say the app is not verified. It is yours and you made it a minute
 ago, so "Advanced" then "Go to ... (unsafe)" is the way through.

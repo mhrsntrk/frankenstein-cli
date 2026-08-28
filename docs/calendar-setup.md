@@ -1,7 +1,8 @@
 # Setting up the calendar
 
-The calendar and todo commands talk to Google, because Proton Calendar has
-neither CalDAV nor a public API.
+The calendar talks to Google, because Proton Calendar has neither CalDAV nor a
+public API. Todos do not: they are stored on this machine and none of what
+follows applies to them.
 
 Google will not let anything into an account without an OAuth client, and this
 tool deliberately ships without one, so the first step is making your own. It
@@ -21,23 +22,22 @@ The command prints these steps and then waits for the two values at the end.
 
 Any name. It is a container for the client, and nobody but you sees it.
 
-### 2. Enable the two APIs
+### 2. Enable the API
 
 **This is the step people skip, and skipping it fails later rather than sooner.**
 A project can hold a working OAuth client while the APIs it calls are switched
 off: authorisation succeeds, and every read comes back `403 SERVICE_DISABLED`.
 
 - [Google Calendar API](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com)
-- [Google Tasks API](https://console.cloud.google.com/apis/library/tasks.googleapis.com)
 
-Press **Enable** on each, with your new project selected in the picker at the
-top of the page. Enabling takes a minute or two to propagate; if the first
-read still fails, wait and try again.
+Press **Enable**, with your new project selected in the picker at the top of
+the page. Enabling takes a minute or two to propagate; if the first read still
+fails, wait and try again.
 
-Calendar alone is enough if you do not want `frankenstein todo`. The todo
-commands will fail and nothing else will.
+Todos do not appear here. They are stored locally and never reach Google, so
+`frankenstein todo` works whether or not any of this is set up.
 
-To check both took:
+To check it took:
 
 ```sh
 frankenstein calendar list
@@ -92,9 +92,8 @@ You are asked to grant:
 |---|---|
 | `calendar.events` | read and write events |
 | `calendar.readonly` | list your calendars |
-| `tasks` | read and write todos |
 
-All three are **sensitive** in Google's classification. None is *restricted*,
+Both are **sensitive** in Google's classification. None is *restricted*,
 which is the category (Gmail's scopes, for instance) that would require a paid
 third-party security assessment.
 
@@ -112,16 +111,17 @@ In the TUI the calendar is hey-cli's own grid:
 | `1` `2` `3` | day, week, year |
 | `p` `n` `t` | back, forward, today |
 | `c` | new event |
-| `enter` | edit the selected event |
+| `enter` | read the selected event |
+| `e` | edit it |
 | `D` | delete it |
-| `b` | habits, which are local |
-| `s` | todos, which are Google Tasks |
+| `b` | habits |
+| `s` | todos |
 | `g` | which calendars are shown |
 | `tab` | next section |
 
 The habits band above the grid and the "Sometime this week" ribbon below it
-come from those last two. Habits are stored locally; todos are the same Google
-Tasks list `frankenstein todo` uses.
+come from those last two. Both are local, and the ribbon shows the same list
+`frankenstein todo` does.
 
 ## Where things end up
 

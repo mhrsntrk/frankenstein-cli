@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	"google.golang.org/api/option"
-	"google.golang.org/api/tasks/v1"
 
-	gcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar/google"
 	"github.com/mhrsntrk/frankenstein-cli/internal/config"
 	"github.com/mhrsntrk/frankenstein-cli/internal/personal"
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui"
@@ -35,153 +33,71 @@ func personalStore(app *App) (*personal.Store, error) {
 
 // --- todos ------------------------------------------------------------------
 
-// tasksService reuses the Google OAuth token the calendar already holds.
-//
-// Todos go to Google Tasks rather than staying local so they sync with the
-// phone, which is the whole reason to have them somewhere other than a text
-// file.
-func tasksService(ctx context.Context, app *App) (*tasks.Service, error) {
-	cfg, err := app.Config()
-	if err != nil {
-		return nil, err
-	}
-
-	clientID, clientSecret := gcal.Credentials(cfg.Calendar.ClientID, cfg.Calendar.ClientSecret)
-	if clientID == "" {
-		return nil, fmt.Errorf("todos use the Google account; run `frankenstein calendar setup` first")
-	}
-
-	tok, err := gcal.LoadToken()
-	if err != nil {
-		return nil, err
-	}
-
-	oc := gcal.OAuthConfig(clientID, clientSecret)
-
-	return tasks.NewService(ctx, option.WithTokenSource(oc.TokenSource(ctx, tok)))
-}
-
-type todo struct {
-	ID     string     `json:"id"`
-	Title  string     `json:"title"`
-	Notes  string     `json:"notes,omitempty"`
-	Due    *time.Time `json:"due,omitempty"`
-	Done   bool       `json:"done"`
-	ListID string     `json:"list_id"`
-}
-
-// listTodos reads the open todos, for the calendar's "Sometime this week"
-// ribbon. It returns the TUI's own shape so that package needs no Google
-// dependency.
+// listTodos reads the open todos for the calendar's "Sometime this week"
+// ribbon.
 func listTodos(ctx context.Context, app *App) ([]tui.TodoItem, error) {
-	svc, err := tasksService(ctx, app)
+	ps, err := personalStore(app)
 	if err != nil {
 		return nil, err
 	}
 
-	listID, err := defaultTaskList(ctx, svc)
+	todos, err := ps.Todos(ctx, false)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := svc.Tasks.List(listID).MaxResults(50).Context(ctx).Do()
-	if err != nil {
-		return nil, fmt.Errorf("list todos: %w", err)
-	}
-
-	out := make([]tui.TodoItem, 0, len(res.Items))
-
-	for _, t := range res.Items {
-		out = append(out, tui.TodoItem{Title: t.Title, Done: t.Status == "completed"})
+	out := make([]tui.TodoItem, 0, len(todos))
+	for _, t := range todos {
+		out = append(out, tui.TodoItem{Title: t.Title, Done: t.Done()})
 	}
 
 	return out, nil
 }
 
-// addTodo creates a todo, for the calendar's manager.
 func addTodo(ctx context.Context, app *App, title string) error {
-	svc, err := tasksService(ctx, app)
+	ps, err := personalStore(app)
 	if err != nil {
 		return err
 	}
 
-	listID, err := defaultTaskList(ctx, svc)
-	if err != nil {
-		return err
-	}
+	_, err = ps.AddTodo(ctx, title, nil, "")
 
-	if _, err := svc.Tasks.Insert(listID, &tasks.Task{Title: title}).Context(ctx).Do(); err != nil {
-		return fmt.Errorf("add todo: %w", err)
-	}
-
-	return nil
+	return err
 }
 
-// completeTodoByTitle marks a todo done.
-//
-// It matches on the title because that is what the calendar ribbon shows; the
-// underlying IDs never reach the TUI, which is what keeps the Google packages
-// out of it.
+// completeTodoByTitle matches on the title because that is what the calendar
+// ribbon shows; the ribbon carries no IDs.
 func completeTodoByTitle(ctx context.Context, app *App, title string) error {
-	svc, err := tasksService(ctx, app)
+	ps, err := personalStore(app)
 	if err != nil {
 		return err
 	}
 
-	listID, err := defaultTaskList(ctx, svc)
+	todo, err := ps.TodoByTitle(ctx, title)
 	if err != nil {
 		return err
 	}
 
-	res, err := svc.Tasks.List(listID).MaxResults(100).Context(ctx).Do()
-	if err != nil {
-		return err
-	}
-
-	for _, t := range res.Items {
-		if t.Title != title || t.Status == "completed" {
-			continue
-		}
-
-		t.Status = "completed"
-
-		if _, err := svc.Tasks.Update(listID, t.Id, t).Context(ctx).Do(); err != nil {
-			return fmt.Errorf("complete todo: %w", err)
-		}
-
-		return nil
-	}
-
-	return fmt.Errorf("no open todo called %q", title)
+	return ps.CompleteTodo(ctx, todo.ID, true)
 }
 
 func newTodoCmd(app *App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "todo",
-		Short:   "Todos, backed by Google Tasks",
+		Short:   "Things to do",
 		Aliases: []string{"todos"},
-		Long: "Todos live in Google Tasks so they sync with the phone.\n\n" +
-			"They reuse the Google authorisation from `frankenstein calendar setup`;\n" +
-			"the Tasks scope is requested at the same time.",
+		Long: "Local, like the habits and the journal. They live in the same SQLite\n" +
+			"file as the mail cache and never leave the machine.",
 	}
 
-	cmd.AddCommand(newTodoListCmd(app), newTodoAddCmd(app), newTodoDoneCmd(app))
+	cmd.AddCommand(
+		newTodoListCmd(app),
+		newTodoAddCmd(app),
+		newTodoDoneCmd(app),
+		newTodoRemoveCmd(app),
+	)
 
 	return cmd
-}
-
-// defaultTaskList returns the account's primary task list.
-func defaultTaskList(ctx context.Context, svc *tasks.Service) (string, error) {
-	lists, err := svc.Tasklists.List().MaxResults(20).Context(ctx).Do()
-	if err != nil {
-		return "", fmt.Errorf("list task lists: %w", err)
-	}
-
-	if len(lists.Items) == 0 {
-		return "", fmt.Errorf("the Google account has no task lists")
-	}
-
-	return lists.Items[0].Id, nil
 }
 
 func newTodoListCmd(app *App) *cobra.Command {
@@ -192,50 +108,18 @@ func newTodoListCmd(app *App) *cobra.Command {
 		Short: "List todos",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx := cmd.Context()
-
-			svc, err := tasksService(ctx, app)
+			ps, err := personalStore(app)
 			if err != nil {
 				return err
 			}
 
-			listID, err := defaultTaskList(ctx, svc)
+			todos, err := ps.Todos(cmd.Context(), all)
 			if err != nil {
 				return err
 			}
 
-			call := svc.Tasks.List(listID).MaxResults(100)
-			if all {
-				call = call.ShowCompleted(true).ShowHidden(true)
-			}
-
-			res, err := call.Context(ctx).Do()
-			if err != nil {
-				return fmt.Errorf("list todos: %w", err)
-			}
-
-			out := make([]todo, 0, len(res.Items))
-
-			for _, t := range res.Items {
-				item := todo{
-					ID:     t.Id,
-					Title:  t.Title,
-					Notes:  t.Notes,
-					Done:   t.Status == "completed",
-					ListID: listID,
-				}
-
-				if t.Due != "" {
-					if d, err := time.Parse(time.RFC3339, t.Due); err == nil {
-						item.Due = &d
-					}
-				}
-
-				out = append(out, item)
-			}
-
-			return app.Emit(out, func(w io.Writer) {
-				if len(out) == 0 {
+			return app.Emit(todos, func(w io.Writer) {
+				if len(todos) == 0 {
 					fmt.Fprintln(w, "Nothing to do.")
 
 					return
@@ -244,19 +128,23 @@ func newTodoListCmd(app *App) *cobra.Command {
 				t := Table(w)
 				fmt.Fprintln(t, "ID\tDONE\tDUE\tTITLE")
 
-				for _, item := range out {
+				for _, item := range todos {
 					mark := " "
-					if item.Done {
+					if item.Done() {
 						mark = "x"
 					}
 
 					due := ""
 					if item.Due != nil {
 						due = item.Due.Format("2 Jan")
+
+						if item.Overdue() {
+							due += " (overdue)"
+						}
 					}
 
-					fmt.Fprintf(t, "%s\t%s\t%s\t%s\n",
-						shortID(item.ID), mark, due, truncate(item.Title, 60))
+					fmt.Fprintf(t, "%d\t%s\t%s\t%s\n",
+						item.ID, mark, due, truncate(item.Title, 60))
 				}
 
 				t.Flush()
@@ -280,38 +168,30 @@ func newTodoAddCmd(app *App) *cobra.Command {
 		Short: "Add a todo",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-
-			svc, err := tasksService(ctx, app)
+			ps, err := personalStore(app)
 			if err != nil {
 				return err
 			}
 
-			listID, err := defaultTaskList(ctx, svc)
-			if err != nil {
-				return err
-			}
-
-			t := &tasks.Task{Title: strings.Join(args, " "), Notes: notes}
+			var dueAt *time.Time
 
 			if due != "" {
-				when, err := parseWhen(due)
+				parsed, err := when.Parse(due)
 				if err != nil {
 					return err
 				}
 
-				t.Due = when.Format(time.RFC3339)
+				dueAt = &parsed
 			}
 
-			created, err := svc.Tasks.Insert(listID, t).Context(ctx).Do()
+			todo, err := ps.AddTodo(cmd.Context(), strings.Join(args, " "), dueAt, notes)
 			if err != nil {
-				return fmt.Errorf("add todo: %w", err)
+				return err
 			}
 
-			return app.Emit(todo{ID: created.Id, Title: created.Title, ListID: listID},
-				func(w io.Writer) {
-					fmt.Fprintf(w, "Added: %s\n", created.Title)
-				})
+			return app.Emit(todo, func(w io.Writer) {
+				fmt.Fprintf(w, "Added: %s\n", todo.Title)
+			})
 		},
 	}
 
@@ -322,62 +202,68 @@ func newTodoAddCmd(app *App) *cobra.Command {
 }
 
 func newTodoDoneCmd(app *App) *cobra.Command {
-	return &cobra.Command{
+	var undo bool
+
+	cmd := &cobra.Command{
 		Use:   "done <id>",
 		Short: "Mark a todo done",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-
-			svc, err := tasksService(ctx, app)
+			ps, err := personalStore(app)
 			if err != nil {
 				return err
 			}
 
-			listID, err := defaultTaskList(ctx, svc)
+			id, err := strconv.ParseInt(args[0], 10, 64)
+			if err != nil {
+				return fmt.Errorf("%q is not a todo id; `frankenstein todo list` shows them", args[0])
+			}
+
+			if err := ps.CompleteTodo(cmd.Context(), id, !undo); err != nil {
+				return err
+			}
+
+			verb := "done"
+			if undo {
+				verb = "reopened"
+			}
+
+			return app.Emit(map[string]any{"ok": true, "id": id, "done": !undo},
+				func(w io.Writer) {
+					fmt.Fprintf(w, "%d %s\n", id, verb)
+				})
+		},
+	}
+
+	cmd.Flags().BoolVar(&undo, "undo", false, "reopen it instead")
+
+	return cmd
+}
+
+func newTodoRemoveCmd(app *App) *cobra.Command {
+	return &cobra.Command{
+		Use:     "remove <id>",
+		Short:   "Delete a todo",
+		Aliases: []string{"rm", "delete"},
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ps, err := personalStore(app)
 			if err != nil {
 				return err
 			}
 
-			// Accept the short prefix the listing prints.
-			id := args[0]
-
-			res, err := svc.Tasks.List(listID).MaxResults(100).Context(ctx).Do()
+			id, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
+				return fmt.Errorf("%q is not a todo id", args[0])
+			}
+
+			if err := ps.DeleteTodo(cmd.Context(), id); err != nil {
 				return err
-			}
-
-			var matches []string
-
-			for _, t := range res.Items {
-				if t.Id == id || strings.HasPrefix(t.Id, id) {
-					matches = append(matches, t.Id)
-				}
-			}
-
-			switch len(matches) {
-			case 0:
-				return fmt.Errorf("no todo matches %q", id)
-			case 1:
-				id = matches[0]
-			default:
-				return fmt.Errorf("%q matches %d todos; use a longer prefix", id, len(matches))
-			}
-
-			t, err := svc.Tasks.Get(listID, id).Context(ctx).Do()
-			if err != nil {
-				return err
-			}
-
-			t.Status = "completed"
-
-			if _, err := svc.Tasks.Update(listID, id, t).Context(ctx).Do(); err != nil {
-				return fmt.Errorf("complete todo: %w", err)
 			}
 
 			return app.Emit(map[string]any{"ok": true, "id": id},
 				func(w io.Writer) {
-					fmt.Fprintf(w, "Done: %s\n", t.Title)
+					fmt.Fprintf(w, "Deleted %d\n", id)
 				})
 		},
 	}

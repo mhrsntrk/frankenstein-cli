@@ -113,22 +113,19 @@ func newTUICmd(app *App) *cobra.Command {
 
 			sc := screener.New(st, p, cfg.Screener)
 
-			// Todos are optional in the same way the calendar is: an
-			// unconfigured Google account means no ribbon, not a failure.
-			var todos tui.Todos
-
-			if cal != nil {
-				todos = tui.Todos{
-					List: func(ctx context.Context) ([]tui.TodoItem, error) {
-						return listTodos(ctx, app)
-					},
-					Add: func(ctx context.Context, title string) error {
-						return addTodo(ctx, app, title)
-					},
-					Complete: func(ctx context.Context, title string) error {
-						return completeTodoByTitle(ctx, app, title)
-					},
-				}
+			// Todos are local, so unlike the calendar they are always
+			// available: the ribbon works on a machine that has never seen a
+			// Google account.
+			todos := tui.Todos{
+				List: func(ctx context.Context) ([]tui.TodoItem, error) {
+					return listTodos(ctx, app)
+				},
+				Add: func(ctx context.Context, title string) error {
+					return addTodo(ctx, app, title)
+				},
+				Complete: func(ctx context.Context, title string) error {
+					return completeTodoByTitle(ctx, app, title)
+				},
 			}
 
 			// The picker writes its choice back to the config, so which

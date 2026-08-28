@@ -21,7 +21,6 @@ import (
 	googleoauth "golang.org/x/oauth2/google"
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
-	"google.golang.org/api/tasks/v1"
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 )
@@ -31,13 +30,12 @@ const (
 	keyringUser    = "google-calendar-token"
 )
 
-// Scopes requested. Full read/write on events, read-only on the calendar list,
-// and Tasks, because todos ride the same Google authorisation rather than
-// making the user run a second consent flow.
+// Scopes requested: full read/write on events, read-only on the calendar list.
+// Nothing else. Todos used to add the Tasks scope, and no longer do — they are
+// local now, so the calendar is the only thing this asks Google for.
 var Scopes = []string{
 	calendar.CalendarEventsScope,
 	calendar.CalendarReadonlyScope,
-	tasks.TasksScope,
 }
 
 // Provider is a Google-backed calendar.Provider.

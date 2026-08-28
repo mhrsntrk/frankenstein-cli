@@ -507,3 +507,154 @@ func (s *Store) SearchJournal(ctx context.Context, term string) ([]JournalEntry,
 
 // DB exposes the handle for tests and for callers that need a raw query.
 func (s *Store) DB() *sql.DB { return s.db }
+
+// --- todos ------------------------------------------------------------------
+
+// Todo is one thing to do. Local, like the habits and the journal: a list of
+// personal reminders has no reason to leave the machine, and making the
+// calendar's todo ribbon wait on an authorised Google account meant it showed
+// nothing until one existed.
+type Todo struct {
+	ID      int64      `json:"id"`
+	Title   string     `json:"title"`
+	Notes   string     `json:"notes,omitempty"`
+	Due     *time.Time `json:"due,omitempty"`
+	DoneAt  *time.Time `json:"done_at,omitempty"`
+	Created time.Time  `json:"created"`
+}
+
+// Done reports whether it has been completed.
+func (t Todo) Done() bool { return t.DoneAt != nil }
+
+// Overdue reports whether it is past its due date and still open.
+func (t Todo) Overdue() bool {
+	return t.Due != nil && !t.Done() && t.Due.Before(time.Now())
+}
+
+// AddTodo creates one.
+func (s *Store) AddTodo(ctx context.Context, title string, due *time.Time, notes string) (Todo, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return Todo{}, fmt.Errorf("a todo needs a title")
+	}
+
+	now := time.Now()
+
+	var dueUnix *int64
+
+	if due != nil {
+		u := due.Unix()
+		dueUnix = &u
+	}
+
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO todos (title, notes, due, created) VALUES (?, ?, ?, ?)`,
+		title, notes, dueUnix, now.Unix())
+	if err != nil {
+		return Todo{}, fmt.Errorf("add todo: %w", err)
+	}
+
+	id, _ := res.LastInsertId()
+
+	return Todo{ID: id, Title: title, Notes: notes, Due: due, Created: now}, nil
+}
+
+// Todos lists todos, open ones first and then by due date.
+func (s *Store) Todos(ctx context.Context, includeDone bool) ([]Todo, error) {
+	query := `SELECT id, title, notes, due, done_at, created FROM todos`
+	if !includeDone {
+		query += ` WHERE done_at IS NULL`
+	}
+
+	// Open before done, then soonest due, then oldest. A todo with no date
+	// sorts after one that has a date, since a deadline is the stronger claim.
+	query += ` ORDER BY done_at IS NOT NULL, due IS NULL, due ASC, created ASC`
+
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list todos: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Todo
+
+	for rows.Next() {
+		var (
+			t           Todo
+			due, doneAt *int64
+			created     int64
+		)
+
+		if err := rows.Scan(&t.ID, &t.Title, &t.Notes, &due, &doneAt, &created); err != nil {
+			return nil, err
+		}
+
+		t.Created = time.Unix(created, 0)
+
+		if due != nil {
+			d := time.Unix(*due, 0)
+			t.Due = &d
+		}
+
+		if doneAt != nil {
+			d := time.Unix(*doneAt, 0)
+			t.DoneAt = &d
+		}
+
+		out = append(out, t)
+	}
+
+	return out, rows.Err()
+}
+
+// CompleteTodo marks one done, or reopens it.
+func (s *Store) CompleteTodo(ctx context.Context, id int64, done bool) error {
+	var doneAt *int64
+
+	if done {
+		u := time.Now().Unix()
+		doneAt = &u
+	}
+
+	res, err := s.db.ExecContext(ctx, `UPDATE todos SET done_at = ? WHERE id = ?`, doneAt, id)
+	if err != nil {
+		return fmt.Errorf("complete todo: %w", err)
+	}
+
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("no todo with id %d", id)
+	}
+
+	return nil
+}
+
+// DeleteTodo removes one outright.
+func (s *Store) DeleteTodo(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM todos WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete todo: %w", err)
+	}
+
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("no todo with id %d", id)
+	}
+
+	return nil
+}
+
+// TodoByTitle finds an open todo by exact title, for callers that only know
+// what the user saw on screen.
+func (s *Store) TodoByTitle(ctx context.Context, title string) (Todo, error) {
+	todos, err := s.Todos(ctx, false)
+	if err != nil {
+		return Todo{}, err
+	}
+
+	for _, t := range todos {
+		if t.Title == title {
+			return t, nil
+		}
+	}
+
+	return Todo{}, fmt.Errorf("no open todo called %q", title)
+}
