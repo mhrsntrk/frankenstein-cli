@@ -3,8 +3,11 @@ package personal_test
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -218,6 +221,78 @@ func TestTimerStartStopAndOverlap(t *testing.T) {
 	}
 }
 
+// Stopping with nothing running must return the exported sentinel, not just
+// any error: StartTimer tells "nothing to stop" apart from a real failure with
+// errors.Is, and string-matching the message is how that used to break.
+func TestStopTimerNothingRunningSentinel(t *testing.T) {
+	ctx := context.Background()
+	ps, _ := setup(t)
+
+	if _, err := ps.StopTimer(ctx); !errors.Is(err, personal.ErrNothingRunning) {
+		t.Fatalf("stop on empty = %v, want ErrNothingRunning", err)
+	}
+
+	if _, err := ps.StartTimer(ctx, "alpha", ""); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	if _, err := ps.StopTimer(ctx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	if _, err := ps.StopTimer(ctx); !errors.Is(err, personal.ErrNothingRunning) {
+		t.Fatalf("second stop = %v, want ErrNothingRunning", err)
+	}
+}
+
+// Starting from several goroutines at once must still leave a single running
+// row: the stop and the insert share one transaction, so two starts cannot
+// both see nothing running and each open an entry.
+func TestTimerConcurrentStartsLeaveOneRunning(t *testing.T) {
+	ctx := context.Background()
+	ps, db := setup(t)
+
+	const n = 10
+
+	var wg sync.WaitGroup
+
+	errs := make([]error, n)
+
+	for i := range n {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			_, errs[i] = ps.StartTimer(ctx, "race", "")
+		}()
+	}
+
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("start %d: %v", i, err)
+		}
+	}
+
+	var total, running int
+
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*), COUNT(*) FILTER (WHERE stopped IS NULL) FROM time_entries`).
+		Scan(&total, &running); err != nil {
+		t.Fatal(err)
+	}
+
+	if total != n {
+		t.Errorf("stored %d entries, want %d", total, n)
+	}
+
+	if running != 1 {
+		t.Errorf("%d entries running, want 1", running)
+	}
+}
+
 func TestTimeByProject(t *testing.T) {
 	ctx := context.Background()
 	ps, db := setup(t)
@@ -304,6 +379,75 @@ func TestJournalWriteAppendsAndIndexes(t *testing.T) {
 
 	if _, err := ps.ReadJournal(ctx, day.AddDate(0, 0, 1)); err == nil {
 		t.Error("reading an unwritten day should fail")
+	}
+}
+
+// The journal write must be temp-file-then-rename: writing the target in
+// place truncates it first, so a crash mid-write would eat the whole day. A
+// leftover temp file beside the entry — the trace such a crash leaves — must
+// disturb neither the entry nor the next append.
+func TestJournalWriteAtomic(t *testing.T) {
+	ctx := context.Background()
+	ps, _ := setup(t)
+
+	day := time.Date(2026, 8, 28, 10, 0, 0, 0, time.Local)
+
+	e, err := ps.WriteJournal(ctx, day, "Morning", "first thought")
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// The rename must leave nothing behind: a temp file surviving a clean
+	// write means the write was not the temp-then-rename it claims to be.
+	dir := filepath.Dir(e.Path)
+
+	leftovers, err := filepath.Glob(filepath.Join(dir, "*.tmp-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(leftovers) != 0 {
+		t.Errorf("temp files left after a clean write: %v", leftovers)
+	}
+
+	// Simulate a crash mid-write: a half-written temp file next to the entry.
+	stale := e.Path + ".tmp-crashed"
+	if err := os.WriteFile(stale, []byte("# 2026-08-28\n\ntrunc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	text, err := ps.ReadJournal(ctx, day)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	if !strings.Contains(text, "first thought") || strings.Contains(text, "trunc") {
+		t.Errorf("entry disturbed by a stale temp file:\n%s", text)
+	}
+
+	if _, err := ps.WriteJournal(ctx, day, "Evening", "second thought"); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	text, err = ps.ReadJournal(ctx, day)
+	if err != nil {
+		t.Fatalf("read after append: %v", err)
+	}
+
+	for _, want := range []string{"first thought", "second thought"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q after append past a stale temp file", want)
+		}
+	}
+
+	// The entry is private, and the mode has to survive the rename.
+	info, err := os.Stat(e.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("entry mode = %o, want 600", perm)
 	}
 }
 

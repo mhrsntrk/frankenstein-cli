@@ -9,6 +9,7 @@ package personal
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -252,16 +253,28 @@ func (e TimeEntry) Duration() time.Duration {
 	return e.Stopped.Sub(e.Started)
 }
 
+// ErrNothingRunning is returned by StopTimer when no entry is open.
+var ErrNothingRunning = errors.New("nothing running")
+
 // StartTimer opens a new entry, closing any that was already running so two
 // timers can never overlap.
 func (s *Store) StartTimer(ctx context.Context, project, note string) (TimeEntry, error) {
-	if _, err := s.StopTimer(ctx); err != nil && !strings.Contains(err.Error(), "nothing running") {
+	// One transaction covers the stop and the insert: two starts racing each
+	// other would otherwise both see nothing running and leave two open rows,
+	// which StopTimer can only close one at a time.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return TimeEntry{}, fmt.Errorf("start timer: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := stopRunning(ctx, tx); err != nil && !errors.Is(err, ErrNothingRunning) {
 		return TimeEntry{}, err
 	}
 
 	now := time.Now()
 
-	res, err := s.db.ExecContext(ctx,
+	res, err := tx.ExecContext(ctx,
 		`INSERT INTO time_entries (project, note, started) VALUES (?, ?, ?)`,
 		project, note, now.Unix())
 	if err != nil {
@@ -270,22 +283,38 @@ func (s *Store) StartTimer(ctx context.Context, project, note string) (TimeEntry
 
 	id, _ := res.LastInsertId()
 
+	if err := tx.Commit(); err != nil {
+		return TimeEntry{}, fmt.Errorf("start timer: %w", err)
+	}
+
 	return TimeEntry{ID: id, Project: project, Note: note, Started: now}, nil
 }
 
-// StopTimer closes the running entry.
+// StopTimer closes the running entry. It returns ErrNothingRunning when there
+// is none.
 func (s *Store) StopTimer(ctx context.Context) (TimeEntry, error) {
+	return stopRunning(ctx, s.db)
+}
+
+// querier is the slice of *sql.DB and *sql.Tx that stopRunning needs, so
+// StopTimer and StartTimer's transaction can share one implementation.
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func stopRunning(ctx context.Context, db querier) (TimeEntry, error) {
 	var (
 		e       TimeEntry
 		started int64
 	)
 
-	err := s.db.QueryRowContext(ctx,
+	err := db.QueryRowContext(ctx,
 		`SELECT id, project, note, started FROM time_entries
 		 WHERE stopped IS NULL ORDER BY started DESC LIMIT 1`).
 		Scan(&e.ID, &e.Project, &e.Note, &started)
 	if err == sql.ErrNoRows {
-		return TimeEntry{}, fmt.Errorf("nothing running")
+		return TimeEntry{}, ErrNothingRunning
 	}
 
 	if err != nil {
@@ -296,7 +325,7 @@ func (s *Store) StopTimer(ctx context.Context) (TimeEntry, error) {
 	e.Started = time.Unix(started, 0)
 	e.Stopped = &now
 
-	if _, err := s.db.ExecContext(ctx,
+	if _, err := db.ExecContext(ctx,
 		`UPDATE time_entries SET stopped = ? WHERE id = ?`, now.Unix(), e.ID); err != nil {
 		return e, fmt.Errorf("stop timer: %w", err)
 	}
@@ -404,7 +433,10 @@ func (s *Store) WriteJournal(ctx context.Context, day time.Time, title, body str
 
 	fmt.Fprintf(&sb, "%s\n", strings.TrimSpace(body))
 
-	if err := os.WriteFile(path, []byte(sb.String()), 0o600); err != nil {
+	// The write goes to a temp file beside the entry and is renamed into
+	// place, which is atomic on POSIX. Writing the target directly would
+	// truncate it first, so a crash mid-write could eat the whole day.
+	if err := writeFileAtomic(path, []byte(sb.String())); err != nil {
 		return JournalEntry{}, fmt.Errorf("write journal entry: %w", err)
 	}
 
@@ -421,6 +453,39 @@ func (s *Store) WriteJournal(ctx context.Context, day time.Time, title, body str
 	}
 
 	return JournalEntry{Day: key, Path: path, Title: title, Updated: now}, nil
+}
+
+// writeFileAtomic writes data to a temp file in path's directory and renames
+// it over path, so the entry on disk is always either the old content or the
+// new, never a truncated half.
+func writeFileAtomic(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+
+	_, err = tmp.Write(data)
+	if err == nil {
+		// CreateTemp already opened it 0600, but keep that explicit: the
+		// journal is private and the mode survives the rename.
+		err = tmp.Chmod(0o600)
+	}
+
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+
+	if err != nil {
+		os.Remove(tmp.Name())
+
+		return err
+	}
+
+	return nil
 }
 
 // JournalEntries lists indexed entries, newest first.
