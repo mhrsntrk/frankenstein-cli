@@ -42,10 +42,40 @@ func Open(path string) (*Store, error) {
 
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
+
 		return nil, fmt.Errorf("migrate cache: %w", err)
 	}
 
+	if err := migrate(db); err != nil {
+		db.Close()
+
+		return nil, err
+	}
+
 	return &Store{db: db}, nil
+}
+
+// migrate applies changes that CREATE TABLE IF NOT EXISTS cannot: an existing
+// cache keeps its old shape, so new columns have to be added explicitly.
+//
+// Each statement is expected to fail on a database that already has it, which
+// is why a duplicate-column error is success rather than a problem.
+func migrate(db *sql.DB) error {
+	statements := []string{
+		`ALTER TABLE conversations ADD COLUMN snippet TEXT NOT NULL DEFAULT ''`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := db.Exec(stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue
+			}
+
+			return fmt.Errorf("migrate cache: %s: %w", stmt, err)
+		}
+	}
+
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -91,6 +121,17 @@ func (s *Store) SetCursor(ctx context.Context, c string) error {
 }
 
 // --- boxes ------------------------------------------------------------------
+
+// Snippet stores a conversation's preview line.
+func (s *Store) SetSnippet(ctx context.Context, conversationID, snippet string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE conversations SET snippet = ? WHERE id = ?`, snippet, conversationID)
+	if err != nil {
+		return fmt.Errorf("store snippet: %w", err)
+	}
+
+	return nil
+}
 
 // PutBoxes replaces the box list wholesale. Boxes are few and change rarely,
 // so a full swap is simpler than reconciling and cannot drift.
@@ -294,7 +335,7 @@ func (s *Store) Conversations(ctx context.Context, opts mail.ListOptions) ([]mai
 
 	query := `SELECT c.id, c.subject, c.senders, c.recipients, c.num_messages,
 	                 c.num_unread, c.num_attachments, c.time, c.size,
-	                 c.category_id, c.sort_order
+	                 c.category_id, c.sort_order, c.snippet
 	          FROM conversations c`
 
 	if opts.BoxID != "" {
@@ -374,7 +415,8 @@ func scanConversation(row scanner) (mail.Conversation, error) {
 	)
 
 	if err := row.Scan(&c.ID, &c.Subject, &senders, &recipients, &c.NumMessages,
-		&c.NumUnread, &c.NumAttachments, &unix, &c.Size, &c.CategoryID, &c.Order); err != nil {
+		&c.NumUnread, &c.NumAttachments, &unix, &c.Size, &c.CategoryID, &c.Order,
+		&c.Snippet); err != nil {
 		return mail.Conversation{}, err
 	}
 
@@ -417,7 +459,7 @@ func (s *Store) conversationBoxes(ctx context.Context, id string) ([]string, err
 func (s *Store) Conversation(ctx context.Context, id string) (mail.Conversation, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, subject, senders, recipients, num_messages, num_unread,
-		        num_attachments, time, size, category_id, sort_order
+		        num_attachments, time, size, category_id, sort_order, snippet
 		 FROM conversations WHERE id = ?`, id)
 
 	c, err := scanConversation(row)

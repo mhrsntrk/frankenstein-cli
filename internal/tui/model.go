@@ -9,10 +9,10 @@ import (
 	"context"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	"github.com/mhrsntrk/frankenstein-cli/internal/config"
@@ -21,6 +21,7 @@ import (
 	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
 	"github.com/mhrsntrk/frankenstein-cli/internal/store"
 	fsync "github.com/mhrsntrk/frankenstein-cli/internal/sync"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
 )
 
 // view is which screen is on top.
@@ -53,18 +54,20 @@ var sectionNames = map[section]string{
 	sectionJournal:  "Journal",
 }
 
+// The chrome takes its colours from hey-cli's theme, so the parts this project
+// draws sit in the same palette as the rows their renderer draws.
 var (
-	titleStyle    = lipgloss.NewStyle().Bold(true)
+	titleStyle    = lipgloss.NewStyle().Foreground(heyui.Bright()).Bold(true)
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
 	unreadStyle   = lipgloss.NewStyle().Bold(true)
-	dimStyle      = lipgloss.NewStyle().Faint(true)
-	errorStyle    = lipgloss.NewStyle().Bold(true)
-	statusStyle   = lipgloss.NewStyle().Faint(true)
-	keyStyle      = lipgloss.NewStyle().Bold(true)
-	sectionStyle  = lipgloss.NewStyle().Faint(true).Underline(true)
+	dimStyle      = heyui.MutedStyle()
+	errorStyle    = lipgloss.NewStyle().Foreground(heyui.Alert()).Bold(true)
+	statusStyle   = heyui.MutedStyle()
+	keyStyle      = lipgloss.NewStyle().Foreground(heyui.Bright()).Bold(true)
+	sectionStyle  = lipgloss.NewStyle().Foreground(heyui.Primary())
 	bannerStyle   = lipgloss.NewStyle().Reverse(true).Bold(true)
-	okStyle       = lipgloss.NewStyle().Bold(true)
-	markStyle     = lipgloss.NewStyle().Bold(true)
+	okStyle       = lipgloss.NewStyle().Foreground(heyui.Primary()).Bold(true)
+	markStyle     = lipgloss.NewStyle().Foreground(heyui.Primary()).Bold(true)
 )
 
 // composeKind distinguishes what a compose form is for, which decides the
@@ -117,13 +120,12 @@ type Model struct {
 	boxIdx   int
 	boxFirst int
 
-	convs     []mail.Conversation
-	convIdx   int
-	convFirst int
-	box       mail.Box
+	convs []mail.Conversation
+	box   mail.Box
 
-	// selected holds conversation IDs marked with space, for bulk actions.
-	selected map[string]bool
+	// list is hey-cli's own row renderer. It owns the cursor, the scroll
+	// position and the selection for the thread list.
+	list *heyui.List
 
 	thread mail.Thread
 	msgIdx int
@@ -193,7 +195,7 @@ func New(
 		cfg:        cfg,
 		filter:     filter,
 		moveFilter: move,
-		selected:   map[string]bool{},
+		list:       heyui.NewList(),
 		status:     "loading",
 	}
 }
@@ -223,11 +225,11 @@ func (m *Model) notify(s string) { m.flash = s }
 // there is one, otherwise the row under the cursor. This is what makes every
 // action work in bulk without a separate set of bulk commands.
 func (m *Model) targets() []string {
-	if len(m.selected) > 0 {
-		out := make([]string, 0, len(m.selected))
+	if m.list.SelectionCount() > 0 {
+		out := make([]string, 0, m.list.SelectionCount())
 
 		for _, c := range m.convs {
-			if m.selected[c.ID] {
+			if m.list.Selected(heyui.PostingID(c.ID)) {
 				out = append(out, c.ID)
 			}
 		}
@@ -235,8 +237,10 @@ func (m *Model) targets() []string {
 		return out
 	}
 
-	if m.view == viewThreads && m.convIdx < len(m.convs) {
-		return []string{m.convs[m.convIdx].ID}
+	if m.view == viewThreads {
+		if c, ok := m.conversationAt(m.list.Cursor()); ok {
+			return []string{c.ID}
+		}
 	}
 
 	if (m.view == viewThread || m.view == viewMessage) && m.thread.Conversation.ID != "" {

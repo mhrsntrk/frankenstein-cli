@@ -34,7 +34,11 @@ CREATE TABLE IF NOT EXISTS conversations (
     time            INTEGER NOT NULL DEFAULT 0,
     size            INTEGER NOT NULL DEFAULT 0,
     category_id     TEXT NOT NULL DEFAULT '',
-    sort_order      INTEGER NOT NULL DEFAULT 0
+    sort_order      INTEGER NOT NULL DEFAULT 0,
+    -- Proton returns no excerpt with conversation metadata, so the preview
+    -- line is derived from a decrypted body and kept here. Empty means "not
+    -- fetched yet", which is what the background prefetch looks for.
+    snippet         TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversations_time ON conversations(time DESC);

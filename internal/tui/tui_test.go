@@ -94,6 +94,7 @@ func newHarness(t *testing.T) *harness {
 	m.boxes = p.Boxen
 	m.quickBoxes = pickQuickBoxes(p.Boxen, cfg.Screener)
 	m.convs = convs
+	m.list.SetPostings(toPostings(convs))
 	m.view = viewThreads
 	m.box = p.Boxen[0]
 	m.account = "me@example.com"
@@ -211,8 +212,8 @@ func TestSelectionAndBulkArchive(t *testing.T) {
 	h.press(t, "space")
 	h.press(t, "space")
 
-	if len(h.m.selected) != 2 {
-		t.Fatalf("selected %d, want 2", len(h.m.selected))
+	if n := h.m.list.SelectionCount(); n != 2 {
+		t.Fatalf("selected %d, want 2", n)
 	}
 
 	h.press(t, "a")
@@ -227,7 +228,7 @@ func TestSelectionAndBulkArchive(t *testing.T) {
 		t.Errorf("archive did not remove them from the inbox: %v", h.p.Unlabelled)
 	}
 
-	if len(h.m.selected) != 0 {
+	if h.m.list.SelectionCount() != 0 {
 		t.Error("selection survived the action")
 	}
 }

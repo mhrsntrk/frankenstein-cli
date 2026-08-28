@@ -6,8 +6,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
 )
 
 // Run starts the program.
@@ -101,7 +99,7 @@ func (m *Model) titleBar() string {
 	case viewThreads:
 		name = m.box.Name
 
-		if n := len(m.selected); n > 0 {
+		if n := m.list.SelectionCount(); n > 0 {
 			name = fmt.Sprintf("%s · %d selected", name, n)
 		}
 	case viewThread, viewMessage:
@@ -332,99 +330,32 @@ func (m *Model) boxesView() string {
 	return b.String()
 }
 
-// threadsView splits unread from read the way hey-cli splits "New for You"
-// from "Previously Seen".
+// threadsView hands the rows to hey-cli's renderer.
 //
-// There is no preview snippet: Proton's conversation metadata carries no
-// excerpt, so showing one would mean decrypting a body per visible row, which
-// is slow and breaks the rule that the render path never touches the network.
+// The two-line layout, the cursor bar, the unread dot, the right-hand date
+// column and the section headings are all theirs; this only sizes the list and
+// tells it whether to split seen from unseen.
 func (m *Model) threadsView() string {
-	if m.loading && len(m.convs) == 0 {
+	if m.loading && m.list.Len() == 0 {
 		return dimStyle.Render("  loading…")
 	}
 
-	if len(m.convs) == 0 {
-		return dimStyle.Render("  Nothing here.")
-	}
+	// Upstream shows the sections only in the Imbox: every other box is a flat
+	// list, and a heading over one that does not track seen state is noise.
+	m.list.HideSections(!m.isImbox())
 
-	var b strings.Builder
+	m.list.SetSize(m.contentWidth(), m.pageSize())
 
-	firstRead := -1
-
-	for i, c := range m.convs {
-		if !c.Unread() {
-			firstRead = i
-
-			break
-		}
-	}
-
-	rows := 0
-
-	for i := m.convFirst; i < len(m.convs) && rows < m.pageSize(); i++ {
-		c := m.convs[i]
-
-		if i == 0 && c.Unread() {
-			b.WriteString(sectionStyle.Render("New for You"))
-			b.WriteString("\n")
-
-			rows++
-		} else if i == firstRead && firstRead > 0 {
-			b.WriteString(sectionStyle.Render("Previously Seen"))
-			b.WriteString("\n")
-
-			rows++
-		}
-
-		b.WriteString(m.threadRow(c, i == m.convIdx))
-		b.WriteString("\n")
-
-		rows++
-	}
-
-	return b.String()
+	return m.list.View()
 }
 
-func (m *Model) threadRow(c mail.Conversation, cursor bool) string {
-	from := "(nobody)"
-	if len(c.Senders) > 0 {
-		from = c.Senders[0].Display()
-	}
-
-	marker := "  "
-
-	switch {
-	case m.selected[c.ID]:
-		marker = " +"
-	case c.Unread():
-		marker = " •"
-	}
-
-	count := ""
-	if c.NumMessages > 1 {
-		count = fmt.Sprintf(" (%d)", c.NumMessages)
-	}
-
-	const senderWidth, dateWidth = 22, 10
-
-	subjWidth := maxInt(10, m.width-(2+1+senderWidth+2+dateWidth+2))
-
-	line := fmt.Sprintf("%s %-*s  %-*s  %*s",
-		marker, senderWidth, truncateStr(from, senderWidth),
-		subjWidth, truncateStr(c.Subject+count, subjWidth),
-		dateWidth, relTime(c.Time))
-
-	switch {
-	case cursor:
-		return selectedStyle.Render(padTo(line, m.width))
-	case m.selected[c.ID]:
-		return markStyle.Render(line)
-	case c.Unread():
-		return unreadStyle.Render(line)
-	default:
-		return line
-	}
+// isImbox reports whether the box on screen is the screener's Imbox.
+func (m *Model) isImbox() bool {
+	return m.cfg.Screener.ImboxID != "" && m.box.ID == m.cfg.Screener.ImboxID
 }
+
+// contentWidth is the width available to a row.
+func (m *Model) contentWidth() int { return maxInt(20, m.width) }
 
 func (m *Model) threadView() string {
 	if m.loading && len(m.thread.Messages) == 0 {

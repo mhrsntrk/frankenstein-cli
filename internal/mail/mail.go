@@ -97,6 +97,11 @@ type Conversation struct {
 	// the provider has none.
 	CategoryID string `json:"category_id,omitempty"`
 
+	// Snippet is the first line of the newest message, for a preview row. It is
+	// empty until something has fetched and decrypted a body, which is why the
+	// interface renders without it and fills it in later.
+	Snippet string `json:"snippet,omitempty"`
+
 	// Order is the provider's sort key, used for stable pagination.
 	Order int64 `json:"-"`
 }

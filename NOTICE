@@ -1,0 +1,30 @@
+frankenstein
+Copyright (c) 2026 Mahir Şentürk
+
+This product includes software developed by 37signals LLC.
+
+The following files are copied from basecamp/hey-cli (MIT licensed,
+https://github.com/basecamp/hey-cli) and carry its copyright:
+
+  internal/tui/heyui/content.go    the thread list renderer
+  internal/tui/heyui/styles.go     the style set
+  internal/tui/heyui/theme.go      theme loading and contrast checks
+  internal/tui/heyui/width.go      grapheme-aware column widths
+  internal/tui/heymodel/posting.go the row types the renderer draws
+  internal/terminal/sanitize.go    escape-sequence stripping
+
+They are kept as close to upstream as practical so they stay diffable
+against it. Local additions sit in separate files:
+
+  internal/tui/heyui/list.go       an exported wrapper around their list
+  internal/tui/heyui/theme_api.go  theme accessors for this project's chrome
+  internal/tui/heyui/cover_stub.go stubs for HEY's cover art, which has no
+                                   Proton equivalent
+
+HEY, the Imbox, the Feed, the Paper Trail and the screener are creations of
+37signals. This project is not affiliated with, endorsed by, or supported by
+them, and HEY is their trademark.
+
+Mail is reached through go-proton-api, gopenpgp and go-crypto, published by
+Proton AG. This project is an independent client and is not affiliated with,
+endorsed by, or supported by Proton AG.

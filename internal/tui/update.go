@@ -43,10 +43,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case convsMsg:
 		m.convs = msg
-		m.convIdx, m.convFirst = 0, 0
+		m.list.SetPostings(toPostings(msg))
+		m.list.SetCursor(0)
+		m.list.ClearSelection()
 		m.loading = false
 
-		return m, nil
+		// The excerpt line is empty until a body has been decrypted, so ask for
+		// the ones now on screen.
+		return m, m.prefetchSnippets()
 
 	case sendersMsg:
 		m.senders = msg
@@ -83,6 +87,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, nil
 
+	case snippetsMsg:
+		// Fold the fetched previews into the rows already on screen, keeping
+		// the cursor and the selection where they were.
+		for i := range m.convs {
+			if s, ok := msg[m.convs[i].ID]; ok {
+				m.convs[i].Snippet = s
+			}
+		}
+
+		cursor := m.list.Cursor()
+		m.list.SetPostings(toPostings(m.convs))
+		m.list.SetCursor(cursor)
+
+		return m, nil
+
 	case syncedMsg:
 		m.loading = false
 		m.status = fmt.Sprintf("synced %d conversations", msg.Conversations)
@@ -97,7 +116,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case actionMsg:
 		m.loading = false
 		m.notify(msg.note)
-		m.selected = map[string]bool{}
+		m.list.ClearSelection()
 
 		var cmds []tea.Cmd
 
@@ -271,28 +290,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startCompose(composeNew)
 
 	case " ":
-		if m.view == viewThreads && m.convIdx < len(m.convs) {
-			id := m.convs[m.convIdx].ID
-
-			if m.selected[id] {
-				delete(m.selected, id)
-			} else {
-				m.selected[id] = true
+		if m.view == viewThreads {
+			if p, ok := m.list.At(m.list.Cursor()); ok {
+				m.list.ToggleSelected(p.ID)
+				m.list.Move(1)
 			}
-
-			m.moveCursor(1)
 		}
 
 		return m, nil
 
 	case "ctrl+a":
 		if m.view == viewThreads {
-			if len(m.selected) == len(m.convs) {
-				m.selected = map[string]bool{}
+			if m.list.SelectionCount() == m.list.Len() {
+				m.list.ClearSelection()
 			} else {
-				for _, c := range m.convs {
-					m.selected[c.ID] = true
-				}
+				m.list.SelectAll()
 			}
 		}
 
@@ -352,7 +364,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.box = m.quickBoxes[i]
 			m.view = viewThreads
 			m.loading = true
-			m.selected = map[string]bool{}
+			m.list.ClearSelection()
 			m.filter.SetValue("")
 
 			return m, m.loadConvs(m.box.ID, "")
@@ -769,7 +781,7 @@ func (m *Model) goBack() (tea.Model, tea.Cmd) {
 	case viewThreads:
 		m.view = viewBoxes
 		m.filter.SetValue("")
-		m.selected = map[string]bool{}
+		m.list.ClearSelection()
 	case viewScreener, viewCompose, viewMovePicker:
 		m.compose = nil
 		m.pop()
@@ -792,13 +804,14 @@ func (m *Model) drillIn() (tea.Model, tea.Cmd) {
 		return m, m.loadConvs(m.box.ID, "")
 
 	case viewThreads:
-		if len(m.convs) == 0 {
+		c, ok := m.conversationAt(m.list.Cursor())
+		if !ok {
 			return m, nil
 		}
 
 		m.loading = true
 
-		return m, m.loadThread(m.convs[m.convIdx].ID)
+		return m, m.loadThread(c.ID)
 
 	case viewThread:
 		if len(m.thread.Messages) == 0 {
@@ -821,7 +834,7 @@ func (m *Model) itemCount() int {
 	case viewBoxes:
 		return len(m.boxes)
 	case viewThreads:
-		return len(m.convs)
+		return m.list.Len()
 	case viewThread:
 		return len(m.thread.Messages)
 	case viewMessage:
@@ -885,7 +898,7 @@ func (m *Model) cursor() int {
 	case viewBoxes:
 		return m.boxIdx
 	case viewThreads:
-		return m.convIdx
+		return m.list.Cursor()
 	case viewThread:
 		return m.msgIdx
 	case viewScreener:
@@ -910,8 +923,7 @@ func (m *Model) setCursor(i int) {
 		m.boxIdx = i
 		m.boxFirst = scrollTo(m.boxFirst, i, m.pageSize())
 	case viewThreads:
-		m.convIdx = i
-		m.convFirst = scrollTo(m.convFirst, i, m.pageSize())
+		m.list.SetCursor(i)
 	case viewThread:
 		m.msgIdx = i
 	case viewScreener:
