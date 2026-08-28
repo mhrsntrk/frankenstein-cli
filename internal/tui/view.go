@@ -12,7 +12,7 @@ import (
 
 // Run starts the program.
 func Run(m *Model) error {
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	_, err := p.Run()
 
@@ -295,58 +295,100 @@ func (m *Model) footer() string {
 		statusStyle.Render(" "+status) + "\n" + m.keyHints()
 }
 
-// keyHints is the footer's key list, wrapped across lines the way hey-cli's
-// is: the whole vocabulary on screen rather than a chosen few.
-func (m *Model) keyHints() string {
-	var groups [][]string
+// keyBinding is one footer entry: the key, and what it does.
+type keyBinding struct {
+	key  string
+	what string
+}
 
+// keyBindings is the whole vocabulary for the current view, in the order it
+// should read.
+func (m *Model) keyBindings() []keyBinding {
 	switch m.view {
 	case viewThreads:
-		groups = [][]string{
-			{"j/k navigate", "enter open", "1-9 box", "tab section", "/ filter", "q quit"},
-			{"space select", "ctrl+a all", "c compose", "r reply", "f forward", "v move"},
-			{"i imbox", "d feed", "p paper trail", "x screen out", "ctrl+s screener"},
-			{"e seen", "u unseen", "s star", "a archive", "t trash", "! spam", "? help"},
+		return []keyBinding{
+			{"j/k", "navigate"}, {"enter", "open"}, {"1-9", "box"}, {"tab", "section"},
+			{"/", "filter"}, {"space", "select"}, {"ctrl+a", "all"},
+			{"c", "compose"}, {"r", "reply"}, {"f", "forward"}, {"v", "move"},
+			{"i", "imbox"}, {"d", "feed"}, {"p", "paper trail"}, {"x", "screen out"},
+			{"ctrl+s", "screener"}, {"e", "seen"}, {"u", "unseen"}, {"s", "star"},
+			{"a", "archive"}, {"t", "trash"}, {"!", "spam"},
+			{"?", "help"}, {"q", "quit"},
 		}
 	case viewThread, viewMessage:
-		groups = [][]string{
-			{"j/k navigate", "enter read", "esc back", "q quit"},
-			{"r reply", "R reply all", "f forward", "a archive", "t trash", "? help"},
+		return []keyBinding{
+			{"j/k", "navigate"}, {"enter", "read"}, {"r", "reply"}, {"R", "reply all"},
+			{"f", "forward"}, {"a", "archive"}, {"t", "trash"},
+			{"esc", "back"}, {"?", "help"}, {"q", "quit"},
 		}
 	case viewScreener:
-		groups = [][]string{
-			{"j/k navigate", "esc back"},
-			{"i imbox", "d feed", "p paper trail", "x screen out"},
+		return []keyBinding{
+			{"j/k", "navigate"}, {"i", "imbox"}, {"d", "feed"}, {"p", "paper trail"},
+			{"x", "screen out"}, {"esc", "back"}, {"q", "quit"},
 		}
 	case viewCompose:
-		groups = [][]string{{"tab field", "ctrl+d send", "ctrl+s save draft", "esc discard"}}
+		return []keyBinding{
+			{"tab", "field"}, {"ctrl+d", "send"}, {"ctrl+s", "save draft"}, {"esc", "discard"},
+		}
 	case viewMovePicker:
-		groups = [][]string{{"up/down choose", "enter move", "esc cancel"}}
+		return []keyBinding{{"up/down", "choose"}, {"enter", "move"}, {"esc", "cancel"}}
 	default:
-		groups = [][]string{
-			{"j/k navigate", "enter open", "tab section", "r sync", "? help", "q quit"},
+		return []keyBinding{
+			{"j/k", "navigate"}, {"enter", "open"}, {"tab", "section"}, {"r", "sync"},
+			{"?", "help"}, {"q", "quit"},
+		}
+	}
+}
+
+// keyHints packs the bindings into as few lines as the width allows.
+//
+// A fixed set of groups reads badly at both extremes: it stacks four short
+// lines across a wide terminal and overflows a narrow one. Packing to the
+// measured width fills whatever is there.
+func (m *Model) keyHints() string {
+	const sep = " · "
+
+	bindings := m.keyBindings()
+	width := m.contentWidth() - 1 // the leading space
+
+	var (
+		lines []string
+		line  strings.Builder
+		used  int
+	)
+
+	flush := func() {
+		if line.Len() > 0 {
+			lines = append(lines, " "+line.String())
+			line.Reset()
+
+			used = 0
 		}
 	}
 
-	lines := make([]string, 0, len(groups))
+	for _, b := range bindings {
+		plain := b.key + " " + b.what
 
-	for _, g := range groups {
-		parts := make([]string, 0, len(g))
-
-		for _, item := range g {
-			// The key is everything before the first space; the rest is what it
-			// does, which reads better dim.
-			if i := strings.Index(item, " "); i > 0 {
-				parts = append(parts, key(item[:i])+dimStyle.Render(" "+item[i+1:]))
-
-				continue
-			}
-
-			parts = append(parts, key(item))
+		cost := len(plain)
+		if used > 0 {
+			cost += len(sep)
 		}
 
-		lines = append(lines, " "+strings.Join(parts, dimStyle.Render(" · ")))
+		if used > 0 && used+cost > width {
+			flush()
+
+			cost = len(plain)
+		}
+
+		if used > 0 {
+			line.WriteString(dimStyle.Render(sep))
+		}
+
+		line.WriteString(key(b.key) + dimStyle.Render(" "+b.what))
+		used += cost
 	}
+
+	flush()
 
 	return strings.Join(lines, "\n")
 }
@@ -750,6 +792,9 @@ func (m *Model) helpView() string {
 		{"/", "filter the list"},
 		{"?", "close this help"},
 		{"q ctrl+c", "quit"},
+		{"", ""},
+		{"click", "move the cursor; click again to open"},
+		{"wheel", "scroll without moving the cursor"},
 	}
 
 	var b strings.Builder

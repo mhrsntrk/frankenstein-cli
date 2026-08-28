@@ -131,3 +131,59 @@ func PostingID(id string) int64 {
 	// orders by it.
 	return int64(h.Sum64() & 0x7fffffffffffffff)
 }
+
+// IndexAtLine maps a line offset inside the rendered list to the posting drawn
+// there, so a click can find its row.
+//
+// The accounting mirrors view()'s loop exactly: an optional section heading,
+// then two lines per posting. Getting it wrong by a line would select the row
+// above or below the one clicked, so it is derived from the same helpers the
+// renderer uses rather than assumed.
+func (l *List) IndexAtLine(line int) (int, bool) {
+	if line < 0 {
+		return 0, false
+	}
+
+	c := &l.inner
+
+	row := 0
+	end := c.scrollOff + c.visibleItemsFrom(c.scrollOff)
+
+	if end > c.itemCount() {
+		end = c.itemCount()
+	}
+
+	for i := c.scrollOff; i < end; i++ {
+		if c.sectionLabelAt(i) != "" {
+			if row == line {
+				// The heading itself: not a row.
+				return 0, false
+			}
+
+			row++
+		}
+
+		if line == row || line == row+1 {
+			return i, true
+		}
+
+		row += 2
+	}
+
+	return 0, false
+}
+
+// ScrollBy moves the window without moving the cursor, for a mouse wheel.
+func (l *List) ScrollBy(delta int) {
+	c := &l.inner
+
+	c.scrollOff += delta
+
+	if max := c.itemCount() - 1; c.scrollOff > max {
+		c.scrollOff = max
+	}
+
+	if c.scrollOff < 0 {
+		c.scrollOff = 0
+	}
+}

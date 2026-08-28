@@ -110,6 +110,8 @@ Everything happens here. Press `?` for the full list.
 | `e` `u` `s` | mark read, unread, star |
 | `a` `t` `!` `v` | archive, trash, spam, move |
 | `/` | filter |
+| click | move the cursor, click again to open |
+| wheel | scroll without moving the cursor |
 
 Actions apply to your selection, or to the row under the cursor when nothing is
 selected, so bulk operations need no separate commands.

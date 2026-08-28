@@ -748,3 +748,172 @@ func TestHeaderStaysOnScreen(t *testing.T) {
 		t.Error("upstream's wordmark is still being rendered")
 	}
 }
+
+// The footer packs its bindings to the width rather than using fixed groups,
+// so a wide terminal gets few long lines and a narrow one gets more short
+// ones. Neither may overflow.
+func TestFooterPacksToWidth(t *testing.T) {
+	h := newHarness(t)
+	h.m.view = viewThreads
+
+	var lastLines int
+
+	for _, w := range []int{60, 100, 160, 240} {
+		h.m.width, h.m.height = w, 40
+
+		hints := h.m.keyHints()
+
+		for _, line := range strings.Split(hints, "\n") {
+			if got := visibleWidth(line); got > h.m.contentWidth() {
+				t.Errorf("at %d columns a footer line is %d wide, content is %d: %q",
+					w, got, h.m.contentWidth(), line)
+			}
+		}
+
+		lines := lineCount(hints)
+
+		// Every binding still has to be there, however it is packed.
+		for _, b := range h.m.keyBindings() {
+			if !strings.Contains(hints, b.what) {
+				t.Errorf("at %d columns the footer lost %q", w, b.what)
+			}
+		}
+
+		if lastLines != 0 && lines > lastLines {
+			t.Errorf("at %d columns the footer grew to %d lines from %d", w, lines, lastLines)
+		}
+
+		lastLines = lines
+	}
+}
+
+// mouse sends a click at a screen position and drains what it returns.
+func (h *harness) clickAt(t *testing.T, x, y int) {
+	t.Helper()
+
+	_, cmd := h.m.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: x, Y: y,
+	})
+	h.drain(t, cmd)
+}
+
+func TestClickMovesTheCursorThenOpens(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 120, 30
+
+	// Render once so the chrome measurements are current.
+	_ = h.m.View()
+
+	rows := h.m.chromeRows()
+	gutter := len(h.m.gutter())
+
+	// The second posting: a section heading, then two lines each.
+	target := rows.body + 1 + 2
+
+	h.clickAt(t, gutter+10, target)
+
+	if got := h.m.list.Cursor(); got != 1 {
+		t.Fatalf("clicking the second row put the cursor at %d, want 1", got)
+	}
+
+	if h.m.view != viewThreads {
+		t.Fatal("the first click opened a thread; it should only move the cursor")
+	}
+
+	// Clicking the row already under the cursor opens it.
+	h.clickAt(t, gutter+10, target)
+
+	if h.m.view != viewThread {
+		t.Errorf("clicking the selected row gave view %v, want viewThread", h.m.view)
+	}
+}
+
+func TestClickOutsideTheContentColumnIsIgnored(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 200, 30
+
+	_ = h.m.View()
+
+	before := h.m.list.Cursor()
+
+	// In the left margin, outside the centred column.
+	h.clickAt(t, 0, h.m.chromeRows().body+1)
+
+	if h.m.list.Cursor() != before {
+		t.Error("a click in the margin moved the cursor")
+	}
+}
+
+func TestClickOnTheBoxBarSwitchesBox(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 140, 30
+	h.m.pending = 3
+
+	_ = h.m.View()
+
+	rows := h.m.chromeRows()
+	if rows.boxes < 0 {
+		t.Skip("the box bar is not being drawn at this size")
+	}
+
+	plain := stripANSI(strings.Split(h.m.header(), "\n")[rows.boxes])
+
+	col := strings.Index(plain, "Feed")
+	if col < 0 {
+		t.Fatalf("Feed is not in the box bar: %q", plain)
+	}
+
+	h.clickAt(t, col+len(h.m.gutter()), rows.boxes)
+
+	if h.m.box.Name != "Feed" {
+		t.Errorf("clicking Feed opened %q", h.m.box.Name)
+	}
+}
+
+func TestClickOnTheScreenerBannerOpensTheQueue(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 140, 30
+	h.m.pending = 5
+
+	_ = h.m.View()
+
+	rows := h.m.chromeRows()
+	if rows.banner < 0 {
+		t.Skip("the banner is not being drawn at this size")
+	}
+
+	h.clickAt(t, len(h.m.gutter())+40, rows.banner)
+
+	if h.m.view != viewScreener {
+		t.Errorf("clicking the banner gave view %v, want viewScreener", h.m.view)
+	}
+}
+
+func TestWheelScrollsWithoutMovingTheCursor(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 120, 20
+
+	var many []mail.Conversation
+
+	for i := range 60 {
+		many = append(many, mail.Conversation{
+			ID: string(rune('a'+i%26)) + string(rune('a'+i/26)), Subject: "Subject",
+			Time:        time.Now().Add(-time.Duration(i) * time.Hour),
+			NumMessages: 1, Senders: []mail.Address{{Name: "Someone"}},
+		})
+	}
+
+	h.m.convs = many
+	h.m.list.SetPostings(toPostings(many))
+
+	_ = h.m.View()
+
+	before := h.m.list.Cursor()
+
+	_, cmd := h.m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	h.drain(t, cmd)
+
+	if h.m.list.Cursor() != before {
+		t.Error("the wheel moved the cursor; it should only scroll")
+	}
+}
