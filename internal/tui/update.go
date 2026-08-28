@@ -850,37 +850,16 @@ func (m *Model) itemCount() int {
 	return 0
 }
 
+// pageSize is how many rows the list may draw.
+//
+// View measures the rendered header and footer and leaves the rest; this is
+// only the fallback for the first frame, before anything has been measured.
 func (m *Model) pageSize() int {
-	n := m.height - m.chromeHeight()
-	if n < 1 {
-		return 1
+	if m.listRows > 0 {
+		return m.listRows
 	}
 
-	return n
-}
-
-// chromeHeight is how many rows the header and footer take, so the list knows
-// what is left for it.
-func (m *Model) chromeHeight() int {
-	h := 2 // title bar, footer
-
-	if m.view == viewBoxes || m.view == viewThreads {
-		h++ // nav row
-
-		if len(m.quickBoxes) > 0 {
-			h++
-		}
-
-		if m.pending > 0 {
-			h++
-		}
-	}
-
-	if m.view == viewBoxes && len(m.events) > 0 {
-		h++
-	}
-
-	return h + 1
+	return maxInt(1, m.height-14)
 }
 
 func (m *Model) moveCursor(delta int) {

@@ -28,9 +28,32 @@ func (m *Model) View() string {
 		return m.helpView()
 	}
 
+	// Recomputed every frame rather than carried: the chrome that had to be
+	// given up on one view may fit on the next.
+	m.chromeLevel = chromeFull
+
+	// The header and footer are measured rather than guessed at: both grow and
+	// shrink with the view, and a stale estimate makes the list overflow and
+	// scroll the header off the top of the terminal.
+	header, footer := m.header(), m.footer()
+
+	m.listRows = m.height - lineCount(header) - lineCount(footer) - 2
+
+	// On a short terminal the chrome alone can fill the screen. Shed the parts
+	// that are conveniences before the parts that say where you are, and keep
+	// at least a couple of rows of content.
+	for m.listRows < 2 && m.chromeLevel < chromeMinimal {
+		m.chromeLevel++
+
+		header, footer = m.header(), m.footer()
+		m.listRows = m.height - lineCount(header) - lineCount(footer) - 2
+	}
+
+	m.listRows = maxInt(1, m.listRows)
+
 	var b strings.Builder
 
-	b.WriteString(m.header())
+	b.WriteString(header)
 	b.WriteString("\n")
 
 	switch m.view {
@@ -55,9 +78,34 @@ func (m *Model) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(m.footer())
+	b.WriteString(footer)
 
-	return m.indent(b.String())
+	// A last guarantee. Anything that still does not fit is cut rather than
+	// allowed to scroll the header away.
+	return m.indent(clampLines(b.String(), m.height))
+}
+
+// clampLines drops trailing lines beyond what the terminal can show.
+func clampLines(s string, height int) string {
+	if height < 1 {
+		return ""
+	}
+
+	lines := strings.Split(s, "\n")
+	if len(lines) <= height {
+		return s
+	}
+
+	return strings.Join(lines[:height], "\n")
+}
+
+// lineCount is how many terminal rows a rendered block occupies.
+func lineCount(s string) int {
+	if s == "" {
+		return 0
+	}
+
+	return strings.Count(strings.TrimSuffix(s, "\n"), "\n") + 1
 }
 
 // --- chrome -----------------------------------------------------------------
@@ -74,30 +122,33 @@ func (m *Model) header() string {
 	b.WriteString(heyui.TopRule(w, "frankenstein", m.account))
 	b.WriteString("\n")
 
-	b.WriteString(heyui.NavRow([]heyui.NavItem{
-		{Label: "Mail"}, {Label: "Calendar"}, {Label: "Journal"},
-	}, int(m.section), true, w))
-	b.WriteString("\n")
-
-	if m.view == viewBoxes || m.view == viewThreads {
-		b.WriteString(heyui.Rule(w, m.locationName()))
-		b.WriteString("\n")
-
-		if bar := m.boxBar(w); bar != "" {
-			b.WriteString(bar)
-			b.WriteString("\n")
-		}
-
-		if banner := m.screenerBanner(w); banner != "" {
-			b.WriteString(banner)
-			b.WriteString("\n")
-		}
-	} else {
-		b.WriteString(heyui.Rule(w, m.locationName()))
+	if m.chromeLevel < chromeMinimal {
+		b.WriteString(heyui.NavRow([]heyui.NavItem{
+			{Label: "Mail"}, {Label: "Calendar"}, {Label: "Journal"},
+		}, int(m.section), true, w))
 		b.WriteString("\n")
 	}
 
-	if m.view == viewBoxes && len(m.events) > 0 {
+	b.WriteString(heyui.Rule(w, m.locationName()))
+	b.WriteString("\n")
+
+	if m.view == viewBoxes || m.view == viewThreads {
+		if m.chromeLevel < chromeNoBoxBar {
+			if bar := m.boxBar(w); bar != "" {
+				b.WriteString(bar)
+				b.WriteString("\n")
+			}
+		}
+
+		if m.chromeLevel < chromeNoBanner {
+			if banner := m.screenerBanner(w); banner != "" {
+				b.WriteString(banner)
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	if m.view == viewBoxes && m.chromeLevel < chromeNoBanner && len(m.events) > 0 {
 		b.WriteString(m.agendaLine())
 		b.WriteString("\n")
 	}
@@ -233,6 +284,11 @@ func (m *Model) footer() string {
 	status := m.status
 	if m.loading {
 		status = "working…"
+	}
+
+	if m.chromeLevel >= chromeNoBanner {
+		// One line: the status, and a pointer to the help that lists the rest.
+		return statusStyle.Render(" "+status) + dimStyle.Render("  ? help")
 	}
 
 	return heyui.Rule(m.contentWidth(), "") + "\n" +

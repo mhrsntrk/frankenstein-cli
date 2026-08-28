@@ -658,3 +658,93 @@ func hasAll(hay []string, needles ...string) bool {
 
 	return true
 }
+
+// The header scrolled off the top because the list drew more rows than were
+// left for it. Whatever the view or the terminal size, the whole screen has to
+// fit in the terminal.
+func TestViewNeverOverflowsTheTerminal(t *testing.T) {
+	h := newHarness(t)
+
+	if _, err := h.m.screener.Observe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	h.drain(t, h.m.loadSenders())
+	h.drain(t, h.m.loadThread("c1"))
+	h.drain(t, h.m.loadBody("m1"))
+
+	// Enough rows that a list left unbounded would run past any of these.
+	var many []mail.Conversation
+
+	for i := range 200 {
+		many = append(many, mail.Conversation{
+			ID:          string(rune('a'+i%26)) + string(rune('a'+i/26)),
+			Subject:     "Subject line number " + string(rune('0'+i%10)),
+			Time:        time.Now().Add(-time.Duration(i) * time.Hour),
+			NumMessages: 1,
+			NumUnread:   i % 3,
+			Senders:     []mail.Address{{Name: "Someone"}},
+			Snippet:     "An excerpt long enough to be truncated on a narrow terminal.",
+		})
+	}
+
+	h.m.convs = many
+	h.m.list.SetPostings(toPostings(many))
+	h.m.pending = 7
+
+	sizes := [][2]int{{80, 24}, {100, 30}, {200, 50}, {120, 14}, {60, 10}}
+
+	views := map[string]view{
+		"boxes":    viewBoxes,
+		"threads":  viewThreads,
+		"thread":   viewThread,
+		"message":  viewMessage,
+		"screener": viewScreener,
+		"calendar": viewCalendar,
+		"journal":  viewJournal,
+	}
+
+	for _, size := range sizes {
+		h.m.width, h.m.height = size[0], size[1]
+
+		for name, v := range views {
+			h.m.view = v
+
+			got := lineCount(h.m.View())
+			if got > h.m.height {
+				t.Errorf("%s at %dx%d rendered %d lines, terminal has %d",
+					name, size[0], size[1], got, h.m.height)
+			}
+		}
+	}
+}
+
+// The header is what tells you where you are; it must survive a full list.
+func TestHeaderStaysOnScreen(t *testing.T) {
+	h := newHarness(t)
+
+	var many []mail.Conversation
+
+	for i := range 100 {
+		many = append(many, mail.Conversation{
+			ID: string(rune('a' + i%26)), Subject: "Subject", Time: time.Now(),
+			NumMessages: 1, Senders: []mail.Address{{Name: "Someone"}},
+		})
+	}
+
+	h.m.convs = many
+	h.m.list.SetPostings(toPostings(many))
+	h.m.width, h.m.height = 120, 30
+	h.m.view = viewThreads
+
+	out := h.m.View()
+
+	first := strings.SplitN(out, "\n", 2)[0]
+	if !strings.Contains(first, "frankenstein") {
+		t.Errorf("the first line is not the title bar: %q", first)
+	}
+
+	if strings.Contains(out, "HEY") {
+		t.Error("upstream's wordmark is still being rendered")
+	}
+}

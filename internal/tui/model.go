@@ -24,6 +24,16 @@ import (
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
 )
 
+// How much chrome is shown, in the order it is given up on a short terminal.
+// The title bar and the rule naming the box are never dropped: they are what
+// say where you are.
+const (
+	chromeFull = iota
+	chromeNoBanner
+	chromeNoBoxBar
+	chromeMinimal
+)
+
 // view is which screen is on top.
 type view int
 
@@ -47,12 +57,6 @@ const (
 	sectionCalendar
 	sectionJournal
 )
-
-var sectionNames = map[section]string{
-	sectionMail:     "Mail",
-	sectionCalendar: "Calendar",
-	sectionJournal:  "Journal",
-}
 
 // The chrome takes its colours from hey-cli's theme, so the parts this project
 // draws sit in the same palette as the rows their renderer draws.
@@ -156,6 +160,14 @@ type Model struct {
 	account    string
 
 	width, height int
+
+	// listRows is what View measured as left over for the list after the
+	// header and footer were rendered.
+	listRows int
+
+	// chromeLevel is how much of the header and footer has been given up to
+	// fit a short terminal. It is recomputed on every resize.
+	chromeLevel int
 
 	status   string
 	flash    string
