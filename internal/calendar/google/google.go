@@ -8,6 +8,7 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -41,6 +42,31 @@ var Scopes = []string{
 // Provider is a Google-backed calendar.Provider.
 type Provider struct {
 	svc *calendar.Service
+
+	// warnings holds what the most recent read chose not to fail over. The
+	// callers of Events and EventsFrom treat a non-nil error as fatal and
+	// throw away the events next to it, so a partial failure cannot ride the
+	// error return without emptying the very view it was meant to save. It is
+	// parked here instead, behind the optional Warnings method.
+	mu       sync.Mutex
+	warnings []string
+}
+
+// Warnings reports what the most recent Events or EventsFrom call dropped
+// without failing: calendars that could not be read while others could, and
+// events whose times could not be parsed. It is replaced on every read, so it
+// belongs to the call that just returned.
+func (p *Provider) Warnings() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return append([]string(nil), p.warnings...)
+}
+
+func (p *Provider) setWarnings(w []string) {
+	p.mu.Lock()
+	p.warnings = w
+	p.mu.Unlock()
 }
 
 // OAuthConfig builds the OAuth2 config for a loopback flow.
@@ -82,13 +108,17 @@ func LoadToken() (*oauth2.Token, error) {
 	return &tok, nil
 }
 
-// ClearToken forgets the stored OAuth token.
+// ClearToken forgets the stored OAuth token. A token that was never there is
+// the outcome the caller wanted; any other failure means the token is still
+// in the keyring, and pretending otherwise would leave a logout that did not
+// log out.
 func ClearToken() error {
-	if err := keyring.Delete(keyringService, keyringUser); err != nil {
+	err := keyring.Delete(keyringService, keyringUser)
+	if errors.Is(err, keyring.ErrNotFound) {
 		return nil // already gone
 	}
 
-	return nil
+	return err
 }
 
 // Authorize runs the loopback OAuth2 flow: bind a local port, open the consent
@@ -256,33 +286,73 @@ func (p *Provider) Calendars(ctx context.Context) ([]fcal.Calendar, error) {
 }
 
 func (p *Provider) Events(ctx context.Context, calendarID string, from, to time.Time) ([]fcal.Event, error) {
+	events, skipped, err := p.events(ctx, calendarID, from, to)
+	if err != nil {
+		return nil, err
+	}
+
+	p.setWarnings(skipWarning(skipped))
+
+	return events, nil
+}
+
+// events reads one calendar's window page by page. Google caps a page at 250
+// items, so a long enough range overflows it; without following
+// NextPageToken the tail of the range silently vanished.
+func (p *Provider) events(ctx context.Context, calendarID string, from, to time.Time) ([]fcal.Event, int, error) {
 	if calendarID == "" {
 		calendarID = "primary"
 	}
 
-	res, err := p.svc.Events.List(calendarID).
+	call := p.svc.Events.List(calendarID).
 		TimeMin(from.Format(time.RFC3339)).
 		TimeMax(to.Format(time.RFC3339)).
 		SingleEvents(true).
 		OrderBy("startTime").
-		MaxResults(250).
-		Context(ctx).Do()
-	if err != nil {
-		return nil, fmt.Errorf("list events: %w", err)
-	}
+		MaxResults(250)
 
-	out := make([]fcal.Event, 0, len(res.Items))
+	var (
+		out     []fcal.Event
+		skipped int
+	)
 
-	for _, e := range res.Items {
-		ev, err := toEvent(e)
+	for {
+		res, err := call.Context(ctx).Do()
 		if err != nil {
-			continue
+			return nil, 0, fmt.Errorf("list events: %w", err)
 		}
 
-		out = append(out, ev)
+		for _, e := range res.Items {
+			ev, err := toEvent(e)
+			if err != nil {
+				// An event whose times cannot be read cannot be placed on a
+				// day, but dropping it in silence sends someone hunting for a
+				// meeting that was there all along. Count it so the caller
+				// can say so.
+				skipped++
+
+				continue
+			}
+
+			out = append(out, ev)
+		}
+
+		if res.NextPageToken == "" {
+			return out, skipped, nil
+		}
+
+		call.PageToken(res.NextPageToken)
+	}
+}
+
+// skipWarning phrases the count of events dropped for unreadable times, or
+// nothing when there were none.
+func skipWarning(n int) []string {
+	if n == 0 {
+		return nil
 	}
 
-	return out, nil
+	return []string{fmt.Sprintf("skipped %d event(s) with unreadable times", n)}
 }
 
 func toEvent(e *calendar.Event) (fcal.Event, error) {
@@ -324,8 +394,15 @@ func parseWhen(t *calendar.EventDateTime) (time.Time, bool, error) {
 
 	if t.DateTime != "" {
 		parsed, err := time.Parse(time.RFC3339, t.DateTime)
+		if err != nil {
+			return time.Time{}, false, err
+		}
 
-		return parsed, false, err
+		// Google answers in the calendar's zone, and keeping that fixed
+		// offset shows a Sydney calendar's clock times on a Madrid screen and
+		// files its events under the wrong day. The instant is right; only
+		// the zone it is read in has to be this machine's.
+		return parsed.In(time.Local), false, nil
 	}
 
 	parsed, err := time.ParseInLocation("2006-01-02", t.Date, time.Local)
@@ -338,8 +415,8 @@ func parseWhen(t *calendar.EventDateTime) (time.Time, bool, error) {
 // The calendars are read in parallel: a person with six of them would
 // otherwise wait for six round trips in a row every time the week moved. One
 // calendar failing does not lose the others -- a shared calendar that has been
-// revoked should not empty the whole view -- but the error is kept so the
-// caller can say so.
+// revoked should not empty the whole view -- so only a total failure comes
+// back as an error, and a partial one is reported through Warnings.
 func (p *Provider) EventsFrom(ctx context.Context, calendarIDs []string, from, to time.Time) ([]fcal.Event, error) {
 	if len(calendarIDs) == 0 {
 		return p.Events(ctx, "", from, to)
@@ -354,8 +431,9 @@ func (p *Provider) EventsFrom(ctx context.Context, calendarIDs []string, from, t
 	}
 
 	type result struct {
-		events []fcal.Event
-		err    error
+		events  []fcal.Event
+		skipped int
+		err     error
 	}
 
 	results := make([]result, len(calendarIDs))
@@ -368,13 +446,13 @@ func (p *Provider) EventsFrom(ctx context.Context, calendarIDs []string, from, t
 		go func() {
 			defer wg.Done()
 
-			events, err := p.Events(ctx, id, from, to)
+			events, skipped, err := p.events(ctx, id, from, to)
 			for j := range events {
 				events[j].CalendarID = id
 				events[j].Color = colours[id]
 			}
 
-			results[i] = result{events: events, err: err}
+			results[i] = result{events: events, skipped: skipped, err: err}
 		}()
 	}
 
@@ -382,21 +460,46 @@ func (p *Provider) EventsFrom(ctx context.Context, calendarIDs []string, from, t
 
 	var (
 		all      []fcal.Event
+		failed   int
 		firstErr error
+		skipped  int
 	)
 
 	for _, r := range results {
-		if r.err != nil && firstErr == nil {
-			firstErr = r.err
+		if r.err != nil {
+			failed++
+
+			if firstErr == nil {
+				firstErr = r.err
+			}
 		}
+
+		skipped += r.skipped
 
 		all = append(all, r.events...)
 	}
 
 	sort.Slice(all, func(i, j int) bool { return all[i].Start.Before(all[j].Start) })
 
-	// Only a total failure is worth reporting: some events beat none.
-	if len(all) == 0 && firstErr != nil {
+	// A calendar that failed while others answered must not vanish without a
+	// word, but it cannot ride the error return either: the callers treat a
+	// non-nil error as fatal and would drop the events that did arrive. It
+	// goes on Warnings instead.
+	warnings := skipWarning(skipped)
+
+	if failed > 0 && failed < len(calendarIDs) {
+		warnings = append(warnings, fmt.Sprintf(
+			"%d of %d calendars failed: %v", failed, len(calendarIDs), firstErr))
+	}
+
+	p.setWarnings(warnings)
+
+	// Only a total failure is worth an error: some events beat none.
+	if failed == len(calendarIDs) {
+		if len(calendarIDs) > 1 {
+			return nil, fmt.Errorf("all %d calendars failed: %w", len(calendarIDs), firstErr)
+		}
+
 		return nil, firstErr
 	}
 
@@ -454,14 +557,17 @@ func toGoogleEvent(d fcal.EventDraft) *calendar.Event {
 
 	if d.AllDay {
 		e.Start = &calendar.EventDateTime{Date: d.Start.Format("2006-01-02")}
-		// Google's end date for an all-day event is exclusive, so a one-day
-		// event ends on the following day.
-		end := d.End
-		if !end.After(d.Start) {
-			end = d.Start.AddDate(0, 0, 1)
+		// The draft's end is already exclusive, the way Google wants it: the
+		// command layer converts the inclusive date a person types. But an
+		// end on the start's own date -- midnight, or a timed end later that
+		// day -- would make a zero-day event, so it becomes the one-day event
+		// it meant.
+		endDate := d.End.Format("2006-01-02")
+		if endDate <= d.Start.Format("2006-01-02") {
+			endDate = d.Start.AddDate(0, 0, 1).Format("2006-01-02")
 		}
 
-		e.End = &calendar.EventDateTime{Date: end.Format("2006-01-02")}
+		e.End = &calendar.EventDateTime{Date: endDate}
 	} else {
 		e.Start = &calendar.EventDateTime{DateTime: d.Start.Format(time.RFC3339)}
 		e.End = &calendar.EventDateTime{DateTime: d.End.Format(time.RFC3339)}

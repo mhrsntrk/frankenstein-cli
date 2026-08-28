@@ -27,9 +27,9 @@ func Parse(s string) (time.Time, error) {
 	// A named day, optionally with a time after it. The time is split off
 	// first because "tomorrow" and "tomorrow 09:00" are the same thought, and
 	// only the first of them used to parse.
-	if day, clock, ok := splitDayAndTime(s); ok {
+	if day, hour, min, ok := splitDayAndTime(s); ok {
 		if base, ok := namedDay(day, now); ok {
-			return at(base, clock), nil
+			return at(base, hour, min), nil
 		}
 	}
 
@@ -56,24 +56,24 @@ func Parse(s string) (time.Time, error) {
 		"could not read %q as a date; try 2006-01-02 15:04, 14:00, tomorrow, or friday 17:00", s)
 }
 
-// splitDayAndTime pulls a trailing HH:MM off a named day.
-func splitDayAndTime(s string) (day string, clock time.Duration, ok bool) {
+// splitDayAndTime pulls a trailing HH:MM off a named day. An hour of -1 means
+// the day came without a clock.
+func splitDayAndTime(s string) (day string, hour, min int, ok bool) {
 	fields := strings.Fields(s)
 
 	switch len(fields) {
 	case 1:
-		return fields[0], -1, true
+		return fields[0], -1, 0, true
 	case 2:
 		t, err := time.Parse("15:04", fields[1])
 		if err != nil {
-			return "", 0, false
+			return "", 0, 0, false
 		}
 
-		return fields[0], time.Duration(t.Hour())*time.Hour +
-			time.Duration(t.Minute())*time.Minute, true
+		return fields[0], t.Hour(), t.Minute(), true
 	}
 
-	return "", 0, false
+	return "", 0, 0, false
 }
 
 // namedDay resolves today, tomorrow, yesterday and the weekday names.
@@ -116,14 +116,16 @@ func namedDay(name string, now time.Time) (time.Time, bool) {
 	return midnight.AddDate(0, 0, delta), true
 }
 
-// at puts a clock time on a day. A negative clock means the day was given
-// without one, which stays at midnight.
-func at(day time.Time, clock time.Duration) time.Time {
-	if clock < 0 {
+// at puts a clock time on a day. The time is built from its components rather
+// than added to midnight as a duration: on a spring-forward day the missing
+// hour would push "09:00" to 10:00. A negative hour means the day was given
+// without a clock, which stays at midnight.
+func at(day time.Time, hour, min int) time.Time {
+	if hour < 0 {
 		return day
 	}
 
-	return day.Add(clock)
+	return time.Date(day.Year(), day.Month(), day.Day(), hour, min, 0, 0, day.Location())
 }
 
 // FormatDuration renders a length the way someone would type it back.
