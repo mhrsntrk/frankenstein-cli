@@ -6,7 +6,9 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
+	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
 )
 
@@ -56,23 +58,38 @@ func (m *Model) View() string {
 	b.WriteString(header)
 	b.WriteString("\n")
 
-	switch m.view {
+	// The composer is a popup over whatever was open, so the screen renders as
+	// that view and the popup is composited on top at the end.
+	bv := m.backView()
+
+	if m.splitMail() && mailSplitView(bv) {
+		bv = viewThreads // one split screen stands in for all three mail views
+
+		b.WriteString(m.splitMailView())
+	}
+
+	switch bv {
 	case viewBoxes:
 		b.WriteString(m.boxesView())
 	case viewThreads:
-		b.WriteString(m.threadsView())
+		// Rendered above when the split is on.
+		if !m.splitMail() {
+			b.WriteString(m.threadsView())
+		}
 	case viewThread:
 		b.WriteString(m.threadView())
 	case viewMessage:
 		b.WriteString(m.messageView())
 	case viewScreener:
 		b.WriteString(m.screenerView())
-	case viewCompose:
-		b.WriteString(m.composeView())
 	case viewCalendar:
 		b.WriteString(m.calendarView())
-	case viewJournal:
-		b.WriteString(m.journalView())
+	case viewNotes:
+		b.WriteString(m.notesView())
+	case viewNoteRead:
+		b.WriteString(m.noteReadView())
+	case viewNoteEdit:
+		b.WriteString(m.noteEditView())
 	case viewMovePicker:
 		b.WriteString(m.movePickerView())
 	case viewEventForm:
@@ -90,7 +107,39 @@ func (m *Model) View() string {
 
 	// A last guarantee. Anything that still does not fit is cut rather than
 	// allowed to scroll the header away.
-	return m.indent(clampLines(b.String(), m.height))
+	frame := m.indent(clampLines(b.String(), m.height))
+
+	// The composer floats over the finished frame, in screen coordinates, so
+	// the mouse handler can use the same geometry to route clicks.
+	if m.compose != nil {
+		lay := composerPlace(m.width, m.height, m.composerMin, m.composerMax)
+
+		if popup, _ := composerPopup(m.compose, lay, m.composerMin, m.account); popup != "" {
+			// The popup has a width floor, so on a terminal thinner than it the
+			// spliced lines overrun the screen; clipping them here shears the
+			// popup's right edge instead of the whole frame's alignment.
+			frame = clampLines(clipToWidth(overlay(frame, popup, lay.x, lay.y), m.width), m.height)
+		}
+	}
+
+	return frame
+}
+
+// clipToWidth cuts every line of a rendered frame to at most width columns,
+// measured in cells so styled text and wide glyphs are cut where they display.
+func clipToWidth(s string, width int) string {
+	if width < 1 {
+		return ""
+	}
+
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if ansi.StringWidth(l) > width {
+			lines[i] = ansi.Truncate(l, width, "")
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // clampLines drops trailing lines beyond what the terminal can show.
@@ -132,7 +181,7 @@ func (m *Model) header() string {
 
 	if m.chromeLevel < chromeMinimal {
 		b.WriteString(heyui.NavRow([]heyui.NavItem{
-			{Label: "Mail"}, {Label: "Calendar"}, {Label: "Journal"},
+			{Label: "Mail"}, {Label: "Calendar"}, {Label: "Notes"},
 		}, int(m.section), true, w))
 		b.WriteString("\n")
 	}
@@ -149,7 +198,7 @@ func (m *Model) header() string {
 		b.WriteString("\n")
 	}
 
-	if m.view == viewBoxes || m.view == viewThreads {
+	if m.mailChrome() {
 		if m.chromeLevel < chromeNoBoxBar {
 			if bar := m.boxBar(w); bar != "" {
 				b.WriteString(bar)
@@ -183,7 +232,9 @@ func (m *Model) locationName() string {
 
 		return m.box.Name
 	case viewThread, viewMessage:
-		return truncateStr(m.thread.Conversation.Subject, maxInt(10, m.contentWidth()/2))
+		// The subject is provider text on its way into the title rule.
+		return truncateStr(terminal.SanitizeLine(m.thread.Conversation.Subject),
+			maxInt(10, m.contentWidth()/2))
 	case viewScreener:
 		return "The Screener"
 	case viewCompose:
@@ -215,8 +266,16 @@ func (m *Model) locationName() string {
 		default:
 			return "Week"
 		}
-	case viewJournal:
-		return "Journal"
+	case viewNotes:
+		return "Notes"
+	case viewNoteRead:
+		return truncateStr(m.openNote.Title, maxInt(10, m.contentWidth()/2))
+	case viewNoteEdit:
+		if m.noteEd != nil && m.noteEd.name != "" {
+			return "Edit note"
+		}
+
+		return "New note"
 	default:
 		return "Mail"
 	}
@@ -239,6 +298,23 @@ func composeTitle(c *composeState) string {
 	}
 }
 
+// mailChrome reports whether the box bar and the screener banner belong on
+// screen: on the mail list screens, and on the split screen that stands in
+// for all of them, looking through an open composer.
+func (m *Model) mailChrome() bool {
+	bv := m.backView()
+
+	return bv == viewBoxes || bv == viewThreads || (m.splitMail() && mailSplitView(bv))
+}
+
+// boxActive reports whether the bar should mark the current box: anywhere a
+// box's own threads are what is on screen.
+func (m *Model) boxActive() bool {
+	bv := m.backView()
+
+	return bv == viewThreads || (m.splitMail() && mailSplitView(bv))
+}
+
 // boxBar is the numbered box switcher, drawn by hey-cli's nav renderer so the
 // shortcut digits are emphasised the way its section row is.
 func (m *Model) boxBar(w int) string {
@@ -257,12 +333,12 @@ func (m *Model) boxBar(w int) string {
 
 		items = append(items, heyui.NavItem{Label: label, Shortcut: fmt.Sprintf("%d", i+1)})
 
-		if m.view == viewThreads && b.ID == m.box.ID {
+		if m.boxActive() && b.ID == m.box.ID {
 			selected = i
 		}
 	}
 
-	return heyui.NavRow(items, selected, m.view == viewThreads, w)
+	return heyui.NavRow(items, selected, m.boxActive(), w)
 }
 
 // screenerBanner keeps the count of waiting senders in front of the reader. The
@@ -306,16 +382,27 @@ func calendarHint(err error) string {
 func (m *Model) agendaLine() string {
 	var parts []string
 
-	today := time.Now().Format("2006-01-02")
+	// An event belongs on today's line whenever its span covers any of
+	// today, not only when it starts today: a multi-day trip is still
+	// happening. The bounds are local calendar days, because dividing epochs
+	// misplaces the boundary in any zone that is not UTC.
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	dayEnd := dayStart.AddDate(0, 0, 1)
 
 	for _, e := range m.events {
-		if e.Start.Format("2006-01-02") != today {
+		if !e.Start.Before(dayEnd) || !e.End.After(dayStart) {
 			continue
 		}
 
 		when := e.Start.Format("15:04")
-		if e.AllDay {
+
+		switch {
+		case e.AllDay:
 			when = "all day"
+		case e.Start.Before(dayStart):
+			// Started on an earlier day, so its start time would mislead.
+			when = "until " + e.End.Format("15:04")
 		}
 
 		parts = append(parts, fmt.Sprintf("%s %s", when, e.Title))
@@ -392,7 +479,7 @@ func (m *Model) keyBindings() []keyBinding {
 		}
 	case viewCompose:
 		return []keyBinding{
-			{"tab", "field"}, {"ctrl+d", "send"}, {"ctrl+s", "save draft"}, {"esc", "discard"},
+			{"tab", "field"}, {"ctrl+d", "send"}, {"ctrl+s", "save draft"}, {"esc", "minimize"},
 		}
 	case viewMovePicker:
 		return []keyBinding{{"up/down", "choose"}, {"enter", "move"}, {"esc", "cancel"}}
@@ -417,6 +504,19 @@ func (m *Model) keyBindings() []keyBinding {
 		return []keyBinding{
 			{"j/k", "navigate"}, {"space", "show or hide"}, {"a", "all"},
 			{"w", "only this one"}, {"esc", "back"},
+		}
+	case viewNotes:
+		return []keyBinding{
+			{"j/k", "navigate"}, {"enter", "read"}, {"n", "new"}, {"e", "edit"},
+			{"D", "delete"}, {"r", "reload"}, {"tab", "section"}, {"?", "help"}, {"q", "quit"},
+		}
+	case viewNoteRead:
+		return []keyBinding{
+			{"j/k", "scroll"}, {"e", "edit"}, {"D", "delete"}, {"esc", "back"}, {"q", "quit"},
+		}
+	case viewNoteEdit:
+		return []keyBinding{
+			{"ctrl+d", "save"}, {"esc", "discard"},
 		}
 	case viewCalendar:
 		return []keyBinding{
@@ -545,6 +645,106 @@ func (m *Model) threadsView() string {
 	return m.list.View()
 }
 
+// splitMailView is the Proton-style mail screen: the message list on the
+// left, the open conversation on the right. It stands in for the threads,
+// thread and message views whenever the terminal is wide enough for both
+// panes to be readable.
+func (m *Model) splitMailView() string {
+	h := maxInt(1, m.pageSize())
+	listW, _, threadW := m.paneGeom()
+
+	m.list.HideSections(!m.tracksUnread())
+
+	convs := m.orderedConvs()
+
+	m.paneTop = clamp(m.paneTop, 0, maxInt(0, len(convs)-1))
+
+	left, _ := listPane(convs, m.list.Cursor(), m.paneTop, func(id string) bool {
+		return m.list.Selected(heyui.PostingID(id))
+	}, listW, h)
+
+	if m.loading && len(convs) == 0 {
+		left = placeholderPane("loading…", listW, h)
+	}
+
+	var right string
+
+	if m.thread.Conversation.ID == "" {
+		right = placeholderPane("Select a conversation.", threadW, h)
+	} else {
+		right, _ = threadPane(m.thread, m.msgIdx, m.threadBodyRef(), m.bodyTop, threadW, h)
+	}
+
+	return joinPanes(left, right, h)
+}
+
+// threadBodyRef is the body text the thread pane may show: the wrapped lines
+// only when they belong to the message that is expanded, so switching cards
+// shows "loading…" rather than the previous message's text.
+func (m *Model) threadBodyRef() []string {
+	if len(m.thread.Messages) == 0 {
+		return nil
+	}
+
+	i := clamp(m.msgIdx, 0, len(m.thread.Messages)-1)
+	if m.body.MessageID != m.thread.Messages[i].ID {
+		return nil
+	}
+
+	return m.bodyLines
+}
+
+// joinPanes zips two equal-height blocks with a rule between them. Both panes
+// arrive exactly as wide as promised, so a plain per-line concatenation keeps
+// the separator straight without measuring anything.
+func joinPanes(left, right string, h int) string {
+	l := strings.Split(left, "\n")
+	r := strings.Split(right, "\n")
+
+	sep := " " + dimStyle.Render("│") + " "
+
+	var b strings.Builder
+
+	for i := 0; i < h; i++ {
+		var ls, rs string
+
+		if i < len(l) {
+			ls = l[i]
+		}
+
+		if i < len(r) {
+			rs = r[i]
+		}
+
+		b.WriteString(ls + sep + rs + "\n")
+	}
+
+	return b.String()
+}
+
+// placeholderPane centres a dim line in an otherwise empty pane. Every row is
+// padded to the full width, because the pane to the left of a separator has
+// to hold its edge.
+func placeholderPane(text string, width, height int) string {
+	blank := strings.Repeat(" ", width)
+	lines := make([]string, 0, height)
+
+	for y := 0; y < height; y++ {
+		if y != height/2 {
+			lines = append(lines, blank)
+
+			continue
+		}
+
+		tw := heyui.DisplayWidth(text)
+		pad := maxInt(0, (width-tw)/2)
+		rest := maxInt(0, width-pad-tw)
+		lines = append(lines, strings.Repeat(" ", pad)+dimStyle.Render(text)+strings.Repeat(" ", rest))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
 // tracksUnread reports whether the box on screen has a meaningful read state.
 // Sent and Drafts do not, so a "New for You" heading over them is nonsense.
 func (m *Model) tracksUnread() bool {
@@ -622,10 +822,12 @@ func (m *Model) threadView() string {
 			marker = " •"
 		}
 
+		// The sender and the subject are provider text, sanitized at this
+		// render boundary like the split view's panes do.
 		line := fmt.Sprintf("%s %-16s  %-26s  %s",
 			marker, msg.Time.Format("2 Jan 15:04"),
-			truncateStr(msg.From.Display(), 26),
-			truncateStr(msg.Subject, maxInt(10, m.contentWidth()-50)))
+			truncateStr(terminal.SanitizeLine(msg.From.Display()), 26),
+			truncateStr(terminal.SanitizeLine(msg.Subject), maxInt(10, m.contentWidth()-50)))
 
 		if msg.Unread {
 			line = unreadStyle.Render(line)
@@ -661,8 +863,26 @@ func (m *Model) messageView() string {
 
 // --- screener ---------------------------------------------------------------
 
+// screenerHeaderLines is what screenerView draws above the first sender row:
+// the explainer and the blank line under it. The mouse handler counts on it.
+const screenerHeaderLines = 2
+
+// screenerWindowStart is the first sender on screen. The view keeps the
+// cursor centred, and the mouse handler needs the same number to map a
+// clicked row back to a sender, so the formula lives once.
+func (m *Model) screenerWindowStart() int {
+	visible := maxInt(1, m.pageSize()-screenerHeaderLines)
+
+	return clamp(m.senderIdx-visible/2, 0, maxInt(0, len(m.senders)-visible))
+}
+
 // screenerView is the decision queue: one sender per row. Deciding here is
 // about a person, so it moves everything they have ever sent.
+//
+// The sender's real address gets its own right-aligned column that is never
+// truncated, and only the display name is cut to fit: a name crafted to read
+// as an address can no longer push the true one off screen. Both came from
+// the provider, so both are sanitized at this render boundary.
 func (m *Model) screenerView() string {
 	if m.loading && len(m.senders) == 0 {
 		return dimStyle.Render("  loading…")
@@ -677,26 +897,30 @@ func (m *Model) screenerView() string {
 	b.WriteString(dimStyle.Render("  Decide once per sender. Everything they sent moves with them."))
 	b.WriteString("\n\n")
 
-	visible := maxInt(1, m.pageSize()-2)
-
-	start := clamp(m.senderIdx-visible/2, 0, maxInt(0, len(m.senders)-visible))
-	end := minInt(start+visible, len(m.senders))
+	start := m.screenerWindowStart()
+	end := minInt(start+maxInt(1, m.pageSize()-screenerHeaderLines), len(m.senders))
 
 	for i := start; i < end; i++ {
 		s := m.senders[i]
 
-		name := s.Address
-		if s.Name != "" {
-			name = fmt.Sprintf("%s <%s>", s.Name, s.Address)
+		name := terminal.SanitizeLine(s.Name)
+		addr := terminal.SanitizeLine(s.Address)
+
+		if name == "" {
+			name = addr
 		}
 
-		tag := ""
+		tag := "    "
 		if s.NewsletterID != "" {
 			tag = "list"
 		}
 
-		line := fmt.Sprintf("  %-46s %5d msg  %-10s  %s",
-			truncateStr(name, 46), s.MessageCount, relTime(s.LastSeen), tag)
+		right := fmt.Sprintf("%5d msg  %-10s  %s  %s",
+			s.MessageCount, relTime(s.LastSeen), tag, addr)
+
+		nameW := maxInt(8, m.contentWidth()-heyui.DisplayWidth(right)-4)
+
+		line := "  " + fitTo(name, nameW) + "  " + right
 
 		if i == m.senderIdx {
 			line = selectedStyle.Render(padTo(line, m.contentWidth()))
@@ -705,43 +929,6 @@ func (m *Model) screenerView() string {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-
-	return b.String()
-}
-
-// --- compose ----------------------------------------------------------------
-
-func (m *Model) composeView() string {
-	c := m.compose
-	if c == nil {
-		return ""
-	}
-
-	var b strings.Builder
-
-	field := func(label string, i int, rendered string) {
-		marker := "  "
-		if c.field == i {
-			marker = markStyle.Render("> ")
-		}
-
-		b.WriteString(marker + dimStyle.Render(fmt.Sprintf("%-9s", label)) + rendered + "\n")
-	}
-
-	field("To", 0, c.to.View())
-	field("Cc", 1, c.cc.View())
-	field("Subject", 2, c.subject.View())
-
-	b.WriteString("\n")
-
-	marker := "  "
-	if c.field == 3 {
-		marker = markStyle.Render("> ")
-	}
-
-	b.WriteString(marker + dimStyle.Render("Body") + "\n")
-	b.WriteString(c.body.View())
-	b.WriteString("\n")
 
 	return b.String()
 }
@@ -869,32 +1056,13 @@ func (m *Model) calAnchor() time.Time {
 		return base.AddDate(0, 0, m.calOffset)
 	}
 
+	// The year grid steps whole years; walking it a week at a time would take
+	// 52 keypresses to change what is on screen.
+	if m.calView == calendarYear {
+		return base.AddDate(m.calOffset, 0, 0)
+	}
+
 	return base.AddDate(0, 0, 7*m.calOffset)
-}
-
-func (m *Model) journalView() string {
-	if len(m.journal) == 0 {
-		return dimStyle.Render("  Nothing written yet. Use `frankenstein journal write`.")
-	}
-
-	var b strings.Builder
-
-	end := minInt(len(m.journal), m.pageSize())
-
-	for i := 0; i < end; i++ {
-		e := m.journal[i]
-
-		line := fmt.Sprintf("  %-12s %s", e.Day, truncateStr(e.Title, maxInt(10, m.contentWidth()-18)))
-
-		if i == m.extraIdx {
-			line = selectedStyle.Render(padTo(line, m.contentWidth()))
-		}
-
-		b.WriteString(line)
-		b.WriteString("\n")
-	}
-
-	return b.String()
 }
 
 // --- help -------------------------------------------------------------------
@@ -906,7 +1074,7 @@ func (m *Model) helpView() string {
 		{"enter", "open"},
 		{"esc backspace", "back"},
 		{"1-9", "jump to a box"},
-		{"tab shift+tab", "Mail, Calendar, Journal"},
+		{"tab shift+tab", "Mail, Calendar, Notes"},
 		{"", ""},
 		{"c", "compose"},
 		{"r", "reply in a thread, sync in a list"},
@@ -931,8 +1099,8 @@ func (m *Model) helpView() string {
 		{"?", "close this help"},
 		{"q ctrl+c", "quit"},
 		{"", ""},
-		{"click", "move the cursor; click again to open"},
-		{"wheel", "scroll without moving the cursor"},
+		{"click", "open a conversation, a message, a button"},
+		{"wheel", "scroll the pane under the pointer"},
 	}
 
 	var b strings.Builder

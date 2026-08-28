@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,10 +16,18 @@ import (
 
 // handleMouse routes a mouse event to whatever is under it.
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	// Text entry keeps the mouse as well as the keyboard: a click inside a
-	// compose form should not act on the list behind it.
-	if m.compose != nil && m.view == viewCompose {
-		return m, nil
+	// The composer floats on top of everything, so it sees the event first: a
+	// click inside it lands on its buttons and fields, and while it is open
+	// (not minimized) the screen behind it is inert, so a stray click cannot
+	// act on a list the writer can barely see.
+	if m.compose != nil {
+		if handled, model, cmd := m.composerMouse(msg); handled {
+			return model, cmd
+		}
+
+		if m.view == viewCompose {
+			return m, nil
+		}
 	}
 
 	// Action and Button rather than the deprecated Type: a wheel event and a
@@ -26,10 +35,10 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// as a press.
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
-		return m.scroll(-3)
+		return m.scroll(-3, msg.X)
 
 	case tea.MouseButtonWheelDown:
-		return m.scroll(3)
+		return m.scroll(3, msg.X)
 
 	case tea.MouseButtonLeft:
 		if msg.Action == tea.MouseActionPress {
@@ -40,16 +49,147 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// scroll moves the view without moving the cursor, which is what a wheel does
-// everywhere else.
-func (m *Model) scroll(delta int) (tea.Model, tea.Cmd) {
+// composerMouse handles an event over the popup. The first return says the
+// event was inside it and is spent, whatever it did.
+func (m *Model) composerMouse(msg tea.MouseMsg) (bool, tea.Model, tea.Cmd) {
+	lay := composerPlace(m.width, m.height, m.composerMin, m.composerMax)
+
+	if msg.X < lay.x || msg.X >= lay.x+lay.w || msg.Y < lay.y || msg.Y >= lay.y+lay.h {
+		return false, m, nil
+	}
+
+	if msg.Button != tea.MouseButtonLeft || msg.Action != tea.MouseActionPress {
+		return true, m, nil
+	}
+
+	// The same renderer that drew the popup says what is under the click, so
+	// the hit map cannot drift from what is on screen.
+	_, regions := composerPopup(m.compose, lay, m.composerMin, m.account)
+
+	id, ok := hit(regions, msg.X-lay.x, msg.Y-lay.y)
+	if !ok {
+		return true, m, nil
+	}
+
+	switch id {
+	case "close":
+		m.compose = nil
+		m.composerMin, m.composerMax = false, false
+
+		if m.view == viewCompose {
+			m.pop()
+		}
+
+	case "minimize":
+		// Parking the popup hands the keyboard and the mouse back to the
+		// screen behind it; the draft stays where it can be seen.
+		m.composerMin = true
+
+		if m.view == viewCompose {
+			m.pop()
+		}
+
+	case "restore":
+		m.composerMin = false
+		m.push(viewCompose)
+		m.sizeCompose()
+
+	case "maximize":
+		if m.composerMin {
+			m.composerMin = false
+			m.composerMax = true
+			m.push(viewCompose)
+		} else {
+			m.composerMax = !m.composerMax
+		}
+
+		m.sizeCompose()
+
+	case "send":
+		// A send already in flight owns the draft; a second click while it
+		// runs would deliver the mail twice.
+		if m.loading {
+			return true, m, nil
+		}
+
+		m.loading = true
+
+		return true, m, m.sendCompose(true)
+
+	case "discard":
+		m.compose = nil
+		m.composerMin, m.composerMax = false, false
+
+		if m.view == viewCompose {
+			m.pop()
+		}
+
+	case "togglecc":
+		m.compose.field = 1
+		m.focusComposeField()
+		m.sizeCompose()
+
+	case "field:to":
+		m.compose.field = 0
+		m.focusComposeField()
+
+	case "field:cc":
+		m.compose.field = 1
+		m.focusComposeField()
+
+	case "field:bcc":
+		m.compose.field = 2
+		m.focusComposeField()
+
+	case "field:subject":
+		m.compose.field = 3
+		m.focusComposeField()
+
+	case "field:body":
+		m.compose.field = 4
+		m.focusComposeField()
+	}
+
+	return true, m, nil
+}
+
+// scroll moves the view under the pointer without moving the cursor, which is
+// what a wheel does everywhere else.
+func (m *Model) scroll(delta, x int) (tea.Model, tea.Cmd) {
+	if m.splitMail() && mailSplitView(m.view) {
+		return m.scrollSplit(delta, x)
+	}
+
 	switch m.view {
 	case viewThreads:
 		m.list.ScrollBy(delta)
 	case viewMessage:
-		m.bodyTop = clamp(m.bodyTop+delta, 0, maxInt(0, len(m.bodyLines)-m.pageSize()))
+		m.bodyTop = clamp(m.bodyTop+delta, 0, maxInt(0, len(m.bodyLines)-m.bodyViewRows()))
 	default:
 		m.moveCursor(delta)
+	}
+
+	return m, nil
+}
+
+// scrollSplit scrolls whichever pane the pointer is over.
+func (m *Model) scrollSplit(delta, x int) (tea.Model, tea.Cmd) {
+	col := x - len(m.gutter())
+	listW, gap, _ := m.paneGeom()
+	h := maxInt(1, m.pageSize())
+
+	if col < listW {
+		// The list pane spends two rows on a conversation, so a three-row
+		// wheel notch moves two conversations. The list's own length is the
+		// bound, matching what the pane draws.
+		m.paneTop = clamp(m.paneTop+delta*2/3, 0, maxInt(0, m.list.Len()-listPageSize(h)))
+
+		return m, nil
+	}
+
+	if col >= listW+gap {
+		m.bodyTop = clamp(m.bodyTop+delta, 0,
+			maxInt(0, len(m.bodyLines)-maxInt(1, threadBodyRows(m.thread, m.msgIdx, h))))
 	}
 
 	return m, nil
@@ -73,6 +213,8 @@ func (m *Model) click(x, y int) (tea.Model, tea.Cmd) {
 	switch {
 	case y == rows.nav && rows.nav >= 0:
 		return m.clickNav(col)
+	case y == rows.subnav && rows.subnav >= 0:
+		return m.clickSubnav(col)
 	case y == rows.boxes && rows.boxes >= 0:
 		return m.clickBoxes(col)
 	case y == rows.banner && rows.banner >= 0:
@@ -86,7 +228,7 @@ func (m *Model) click(x, y int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	return m.clickBody(y - rows.body)
+	return m.clickBody(col, y-rows.body)
 }
 
 // chromeRows is which screen line each part of the header occupies, or -1 when
@@ -96,14 +238,19 @@ func (m *Model) click(x, y int) (tea.Model, tea.Cmd) {
 // what should be there: the header sheds rows on a short terminal, and a click
 // map that disagreed with what is on screen would act on the wrong thing.
 type chromeRows struct {
-	nav    int
+	nav int
+
+	// subnav is the calendar's Day/Week/Year row, drawn only in the
+	// calendar view.
+	subnav int
+
 	boxes  int
 	banner int
 	body   int
 }
 
 func (m *Model) chromeRows() chromeRows {
-	out := chromeRows{nav: -1, boxes: -1, banner: -1}
+	out := chromeRows{nav: -1, subnav: -1, boxes: -1, banner: -1}
 
 	lines := strings.Split(m.header(), "\n")
 
@@ -120,7 +267,14 @@ func (m *Model) chromeRows() chromeRows {
 	// The rule naming the box.
 	row++
 
-	if m.view == viewBoxes || m.view == viewThreads {
+	// The calendar's sub-nav sits under that rule, exactly when header()
+	// draws it.
+	if m.view == viewCalendar && m.chromeLevel < chromeNoBoxBar {
+		out.subnav = row
+		row++
+	}
+
+	if m.mailChrome() {
 		if m.chromeLevel < chromeNoBoxBar && len(m.quickBoxes) > 0 {
 			out.boxes = row
 			row++
@@ -139,9 +293,9 @@ func (m *Model) chromeRows() chromeRows {
 	return out
 }
 
-// clickNav switches section from the Mail / Calendar / Journal row.
+// clickNav switches section from the Mail / Calendar / Notes row.
 func (m *Model) clickNav(col int) (tea.Model, tea.Cmd) {
-	labels := []string{"Mail", "Calendar", "Journal"}
+	labels := []string{"Mail", "Calendar", "Notes"}
 
 	if i, ok := hitLabel(m.header(), 1, labels, col); ok {
 		m.section = section(i)
@@ -150,6 +304,21 @@ func (m *Model) clickNav(col int) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// clickSubnav switches the calendar grid from its Day/Week/Year row, doing
+// what the 1, 2 and 3 keys do: pick the grid and come back to today.
+func (m *Model) clickSubnav(col int) (tea.Model, tea.Cmd) {
+	labels := []string{"Day", "Week", "Year"}
+
+	i, ok := hitLabel(m.header(), m.chromeRows().subnav, labels, col)
+	if !ok {
+		return m, nil
+	}
+
+	m.calView, m.calOffset = calendarView(i), 0
+
+	return m, m.loadEvents()
 }
 
 // clickBoxes jumps to a box from the numbered switcher.
@@ -170,6 +339,7 @@ func (m *Model) clickBoxes(col int) (tea.Model, tea.Cmd) {
 	m.loading = true
 	m.list.ClearSelection()
 	m.filter.SetValue("")
+	m.resetMailContext()
 
 	return m, m.loadConvs(m.box.ID, "")
 }
@@ -204,7 +374,11 @@ func hitLabel(header string, row int, labels []string, col int) (int, bool) {
 }
 
 // clickBody acts on a click inside the view under the header.
-func (m *Model) clickBody(line int) (tea.Model, tea.Cmd) {
+func (m *Model) clickBody(col, line int) (tea.Model, tea.Cmd) {
+	if m.splitMail() && mailSplitView(m.view) {
+		return m.clickSplit(col, line)
+	}
+
 	switch m.view {
 	case viewThreads:
 		i, ok := m.list.IndexAtLine(line)
@@ -222,7 +396,11 @@ func (m *Model) clickBody(line int) (tea.Model, tea.Cmd) {
 
 		return m, nil
 
-	case viewBoxes, viewThread, viewScreener, viewCalendar, viewJournal:
+	case viewBoxes, viewThread, viewScreener, viewNotes:
+		// The calendar is deliberately absent from this list: it is a grid,
+		// not one item per line, so mapping a screen row onto extraIdx only
+		// scrambled the selection. Its clickable surface is the Day/Week/Year
+		// sub-nav in the header, and the wheel still moves the cursor.
 		target := m.cursor() + (line - m.cursorLine())
 		if target == m.cursor() {
 			return m.drillIn()
@@ -236,12 +414,82 @@ func (m *Model) clickBody(line int) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// clickSplit acts on a click inside the two-pane mail screen. A click in the
+// list opens the conversation straight away, the way Proton's list does: the
+// reading pane makes a misplaced click cheap to recover from, unlike the old
+// full-screen drill-down the two-step click protected.
+func (m *Model) clickSplit(col, line int) (tea.Model, tea.Cmd) {
+	listW, gap, threadW := m.paneGeom()
+	h := maxInt(1, m.pageSize())
+
+	if col < listW {
+		i := m.paneTop + line/2
+
+		c, ok := m.conversationAt(i)
+		if line < 0 || line/2 >= listPageSize(h) || !ok {
+			return m, nil
+		}
+
+		m.list.SetCursor(i)
+		m.view = viewThreads
+		m.loading = true
+
+		return m, m.loadThread(c.ID)
+	}
+
+	if col < listW+gap || m.thread.Conversation.ID == "" {
+		return m, nil
+	}
+
+	// The same renderer that drew the pane says what is under the click.
+	_, regions := threadPane(m.thread, m.msgIdx, m.threadBodyRef(), m.bodyTop, threadW, h)
+
+	id, ok := hit(regions, col-listW-gap, line)
+	if !ok {
+		return m, nil
+	}
+
+	switch id {
+	case "reply":
+		return m.startCompose(composeReply)
+	case "replyall":
+		return m.startCompose(composeReplyAll)
+	case "forward":
+		return m.startCompose(composeForward)
+	case "star":
+		return m.applyLabel("Starred", "starred")
+	}
+
+	var i int
+	if n, err := fmt.Sscanf(id, "msg:%d", &i); n == 1 && err == nil {
+		if i == m.msgIdx {
+			return m, nil
+		}
+
+		m.msgIdx = i
+		m.bodyTop = 0
+		m.view = viewThread
+		m.loading = true
+
+		return m, m.loadBody(m.thread.Messages[i].ID)
+	}
+
+	return m, nil
+}
+
 // cursorLine is which body line the cursor is drawn on, for the views that
 // render one item per line.
 func (m *Model) cursorLine() int {
 	switch m.view {
 	case viewBoxes:
 		return m.cursor() - m.boxFirst
+	case viewNotes:
+		return m.cursor() - m.notesWindowStart()
+	case viewScreener:
+		// The screener draws two header lines and then a window centred on the
+		// cursor, so the click math shares its start formula the way the notes
+		// list shares notesWindowStart.
+		return screenerHeaderLines + m.cursor() - m.screenerWindowStart()
 	default:
 		return m.cursor()
 	}

@@ -24,6 +24,14 @@ type calendarPicker struct {
 type calendarsMsg []fcal.Calendar
 
 func (m *Model) openCalendars() (tea.Model, tea.Cmd) {
+	// Without a provider the list can never arrive, and the picker would sit
+	// at "loading…" forever. Refusing with the fix beats a dead end.
+	if m.cal == nil {
+		m.err = fcal.ErrNotConfigured
+
+		return m, nil
+	}
+
 	// The set is resolved once the list arrives, because "primary" only
 	// becomes a real address in the presence of the list.
 	m.picker = &calendarPicker{shown: map[string]bool{}}
@@ -98,7 +106,12 @@ func (m *Model) handleCalendarPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.applyCalendars(p)
 
 	case "w":
-		// Only the one under the cursor.
+		// Only the one under the cursor, which has to exist: the key can be
+		// pressed while the list is still loading.
+		if len(p.calendars) == 0 {
+			return m, nil
+		}
+
 		p.shown = map[string]bool{p.calendars[p.idx].ID: true}
 
 		return m, m.applyCalendars(p)

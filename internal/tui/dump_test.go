@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
@@ -35,7 +37,7 @@ func TestDumpHeyRows(t *testing.T) {
 			NumMessages: 1, Snippet: "Your building control completion certificate is attached to this message",
 			Senders: []mail.Address{{Name: "Building Inspector"}}},
 	}
-	h.m.list.SetPostings(toPostings(h.m.convs))
+	h.m.setPostings(h.m.convs)
 	h.m.box = mail.Box{ID: "b1", Name: "Imbox"}
 	h.m.quickBoxes = []mail.Box{
 		{ID: "b1", Name: "Imbox", Unread: 3}, {ID: "b2", Name: "Feed", Unread: 41},
@@ -48,6 +50,48 @@ func TestDumpHeyRows(t *testing.T) {
 	h.m.status = "synced 414 conversations"
 
 	t.Logf("\n%s\n", h.m.View())
+}
+
+// TestDumpSplitMail prints the two-pane mail screen with a thread open, so
+// the pane geometry can be looked at. Run with DUMP_VIEW=1.
+func TestDumpSplitMail(t *testing.T) {
+	if os.Getenv("DUMP_VIEW") == "" {
+		t.Skip("set DUMP_VIEW=1 to print the rendered view")
+	}
+
+	h := newHarness(t)
+	h.m.width, h.m.height = 160, 34
+	h.m.account = "you@example.com"
+	h.m.pending = 7
+	h.m.status = "synced 414 conversations"
+
+	h.press(t, "enter") // opens c1 and expands its message
+
+	t.Logf("\n%s\n", h.m.View())
+}
+
+// TestDumpComposer prints the popup floating over the split screen. Run with
+// DUMP_VIEW=1.
+func TestDumpComposer(t *testing.T) {
+	if os.Getenv("DUMP_VIEW") == "" {
+		t.Skip("set DUMP_VIEW=1 to print the rendered view")
+	}
+
+	h := newHarness(t)
+	h.m.width, h.m.height = 160, 34
+	h.m.account = "you@example.com"
+
+	h.press(t, "enter")
+	h.press(t, "c")
+	h.typeText(t, "ada@example.com")
+
+	t.Logf("\n%s\n", h.m.View())
+
+	// And parked as the minimized bar.
+	h.m.composerMin = true
+	h.m.pop()
+
+	t.Logf("minimized:\n%s\n", h.m.View())
 }
 
 // TestDumpEventDetail prints the event detail view. Run with DUMP_VIEW=1.
@@ -110,4 +154,32 @@ func TestDumpCalendarDay(t *testing.T) {
 	h.m.extraIdx = 1
 
 	t.Logf("selected = Design review\n%s\n", h.m.View())
+}
+
+// TestDumpNotes prints the notes list and the editor. Run with DUMP_VIEW=1.
+func TestDumpNotes(t *testing.T) {
+	if os.Getenv("DUMP_VIEW") == "" {
+		t.Skip("set DUMP_VIEW=1 to print the rendered view")
+	}
+
+	h := newHarness(t)
+	h.m.width, h.m.height = 120, 30
+	h.m.account = "you@example.com"
+
+	h.press(t, "tab")
+	h.press(t, "tab")
+	h.press(t, "n")
+	h.typeText(t, "Palmarès launch checklist")
+	h.m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	h.m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	h.typeText(t, "- domains")
+	h.press(t, "ctrl+d")
+
+	t.Logf("list:\n%s\n", h.m.View())
+
+	h.press(t, "enter")
+	t.Logf("reader:\n%s\n", h.m.View())
+
+	h.press(t, "e")
+	t.Logf("editor:\n%s\n", h.m.View())
 }

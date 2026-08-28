@@ -50,6 +50,48 @@ func toPostings(convs []mail.Conversation) []heymodel.Posting {
 	return out
 }
 
+// setPostings is the one way the conversation list changes hands: it keeps
+// m.convs, the heyui list and the orderedConvs cache in step, so a renderer
+// can never read an ordering the list no longer draws.
+func (m *Model) setPostings(convs []mail.Conversation) {
+	m.convs = convs
+	m.list.SetPostings(toPostings(convs))
+	m.ordered = nil
+}
+
+// orderedConvs is the conversations in the list's own order. The heyui list
+// resorts its postings into sections, so m.convs' order cannot be trusted for
+// the split pane's row math; the list is the authority on what row i is. The
+// answer is cached until setPostings replaces the rows, because this used to
+// be rebuilt on every frame.
+func (m *Model) orderedConvs() []mail.Conversation {
+	if m.ordered != nil {
+		return m.ordered
+	}
+
+	byID := make(map[int64]mail.Conversation, len(m.convs))
+	for _, c := range m.convs {
+		byID[heyui.PostingID(c.ID)] = c
+	}
+
+	out := make([]mail.Conversation, 0, m.list.Len())
+
+	for i := 0; i < m.list.Len(); i++ {
+		p, ok := m.list.At(i)
+		if !ok {
+			continue
+		}
+
+		if c, ok := byID[p.ID]; ok {
+			out = append(out, c)
+		}
+	}
+
+	m.ordered = out
+
+	return out
+}
+
 // conversationAt maps a rendered row back to the conversation behind it.
 func (m *Model) conversationAt(i int) (mail.Conversation, bool) {
 	p, ok := m.list.At(i)

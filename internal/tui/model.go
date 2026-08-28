@@ -44,8 +44,11 @@ const (
 	calendarYear
 )
 
-// TodoItem is one todo, as little of it as the ribbon needs.
+// TodoItem is one todo, as little of it as the ribbon needs. The ID is what
+// completion goes by: titles are not unique, and completing by title marks
+// the wrong one done when two match.
 type TodoItem struct {
+	ID    int64
 	Title string
 	Done  bool
 }
@@ -58,7 +61,7 @@ type TodoLister func(context.Context) ([]TodoItem, error)
 type Todos struct {
 	List     TodoLister
 	Add      func(context.Context, string) error
-	Complete func(context.Context, string) error
+	Complete func(context.Context, int64) error
 }
 
 // view is which screen is on top.
@@ -72,13 +75,15 @@ const (
 	viewScreener
 	viewCompose
 	viewCalendar
-	viewJournal
+	viewNotes
 	viewMovePicker
 	viewEventForm
 	viewEventDetail
 	viewHabits
 	viewTodos
 	viewCalendars
+	viewNoteRead
+	viewNoteEdit
 )
 
 // section is the top-level area, switched with tab.
@@ -87,7 +92,7 @@ type section int
 const (
 	sectionMail section = iota
 	sectionCalendar
-	sectionJournal
+	sectionNotes
 )
 
 // The chrome takes its colours from hey-cli's theme, so the parts this project
@@ -122,14 +127,23 @@ type composeState struct {
 
 	to      textinput.Model
 	cc      textinput.Model
+	bcc     textinput.Model
 	subject textinput.Model
 	body    textarea.Model
 
-	// field is which input has focus: 0 to, 1 cc, 2 subject, 3 body.
+	// field is which input has focus: 0 to, 1 cc, 2 bcc, 3 subject, 4 body.
 	field int
 
-	// inReplyTo is the message being answered, empty for a fresh compose.
+	// inReplyTo is the message being answered or forwarded, empty for a fresh
+	// compose. It is the only threading field mail.Draft carries, so a forward
+	// uses it too: the provider still learns which message the draft descends
+	// from.
 	inReplyTo string
+
+	// draftID is the saved draft on the server, empty until the first ctrl+s.
+	// Saving again with an ID updates that draft rather than creating a new
+	// one, which is what Provider.Draft documents for a non-empty ID.
+	draftID string
 }
 
 // Model is the whole application state.
@@ -172,6 +186,11 @@ type Model struct {
 	convs []mail.Conversation
 	box   mail.Box
 
+	// ordered caches orderedConvs' answer, because the split view asked for it
+	// every frame. It is invalidated by setPostings, the only place the list's
+	// ordering can change.
+	ordered []mail.Conversation
+
 	// list is hey-cli's own row renderer. It owns the cursor, the scroll
 	// position and the selection for the thread list.
 	list *heyui.List
@@ -188,6 +207,18 @@ type Model struct {
 	// calErr is why the calendar is empty, when it is empty for a reason.
 	calErr error
 
+	// eventsGen tags each loadEvents with a generation, so a slow response
+	// from an old window cannot overwrite the one now on screen.
+	eventsGen int
+
+	// convsGen, threadGen and bodyGen do for the mail loads what eventsGen
+	// does for the calendar: each request carries the generation it was issued
+	// under, and a response overtaken by a newer request is dropped rather
+	// than applied over it.
+	convsGen  int
+	threadGen int
+	bodyGen   int
+
 	// calView is which grid is drawn, and calOffset how many days or weeks
 	// away from today it is.
 	calView   calendarView
@@ -203,15 +234,41 @@ type Model struct {
 	// simply unavailable.
 	todos          TodoLister
 	addTodoFn      func(context.Context, string) error
-	completeTodoFn func(context.Context, string) error
+	completeTodoFn func(context.Context, int64) error
 
-	journal  []personal.JournalEntry
+	// notesDir is the folder of markdown files the Notes section reads and
+	// writes. The folder is the store: no index sits between it and the list.
+	notesDir string
+
+	notes []personal.Note
+
+	// openNote is the note being read, noteRaw its markdown as loaded,
+	// noteLines the wrapped text and noteTop the scroll position. The raw
+	// text is kept so a resize can re-wrap without another disk read.
+	openNote  personal.Note
+	noteRaw   string
+	noteLines []string
+	noteTop   int
+
+	noteEd *noteEditor
+
 	extraIdx int
 
 	senders   []screener.Sender
 	senderIdx int
 
-	compose   *composeState
+	compose *composeState
+
+	// composerMin and composerMax are the popup's window state: parked as a
+	// bar at the bottom right, or grown to nearly the whole screen. Both
+	// survive the popup losing focus, the way Proton's window does.
+	composerMin bool
+	composerMax bool
+
+	// paneTop is the first conversation visible in the split view's list
+	// pane. The wheel moves it without moving the cursor.
+	paneTop int
+
 	eventForm *eventForm
 	band      *bandEditor
 	picker    *calendarPicker
@@ -267,7 +324,13 @@ func New(
 	move.Placeholder = "box"
 	move.CharLimit = 60
 
+	// The notes folder comes from config rather than a constructor argument:
+	// it is a local path, and every caller would pass the same one. An error
+	// here only means no home directory, where nothing else works either.
+	notesDir, _ := config.NotesDir()
+
 	return &Model{
+		notesDir:       notesDir,
 		store:          st,
 		syncer:         syncer,
 		provider:       p,
@@ -351,6 +414,100 @@ func (m *Model) boxByName(name string) (mail.Box, bool) {
 	}
 
 	return mail.Box{}, false
+}
+
+// inMailContext reports whether what is on screen is still the mail section:
+// one of the mail views, or the composer floating over them. A thread or body
+// that lands outside this context is stored but must not adopt the view, or a
+// slow load would yank the user out of whatever they navigated to since.
+func (m *Model) inMailContext() bool {
+	return m.section == sectionMail && (mailSplitView(m.view) || m.view == viewCompose)
+}
+
+// resetMailContext clears what belongs to the previous box or filter: the open
+// thread and body would otherwise linger in the split view's right pane, and
+// the old cursor position is meaningless against a new listing.
+func (m *Model) resetMailContext() {
+	m.thread = mail.Thread{}
+	m.body = mail.Body{}
+	m.bodyLines = nil
+	m.msgIdx = 0
+	m.bodyTop = 0
+	m.paneTop = 0
+	m.list.SetCursor(0)
+}
+
+// splitMail reports whether the mail section draws the Proton-style two-pane
+// layout. Below the threshold the panes would each be too narrow to read, so
+// the single-pane drill-down remains the fallback.
+func (m *Model) splitMail() bool { return m.width >= 100 }
+
+// mailSplitViews are the screens the split layout replaces: the list, the
+// thread and the open message all become one screen with two panes.
+func mailSplitView(v view) bool {
+	return v == viewThreads || v == viewThread || v == viewMessage
+}
+
+// paneGeom splits the content width between the list and the thread pane,
+// with a three-cell gap for the separator.
+func (m *Model) paneGeom() (listW, gap, threadW int) {
+	w := m.contentWidth()
+	listW = clamp(w*2/5, 30, 70)
+	gap = 3
+
+	return listW, gap, maxInt(20, w-listW-gap)
+}
+
+// backView is the screen the composer floats over. The composer is a popup,
+// not a place, so everything that renders or hit-tests the screen underneath
+// looks through it.
+func (m *Model) backView() view {
+	if m.view != viewCompose {
+		return m.view
+	}
+
+	if len(m.stack) > 0 {
+		return m.stack[len(m.stack)-1]
+	}
+
+	return viewThreads
+}
+
+// bodyViewRows is how many rows of message body are on screen: the whole page
+// in the single-pane view, what the thread pane's chrome leaves in the split.
+func (m *Model) bodyViewRows() int {
+	if m.splitMail() {
+		return maxInt(1, threadBodyRows(m.thread, m.msgIdx, maxInt(1, m.pageSize())))
+	}
+
+	return m.pageSize()
+}
+
+// sizeCompose fits the composer's embedded inputs to the popup geometry,
+// following the formula composerPopup documents: single-line inputs get
+// lay.w-13, the body lay.w-4 wide and the rows the fixed chrome leaves.
+func (m *Model) sizeCompose() {
+	c := m.compose
+	if c == nil {
+		return
+	}
+
+	lay := composerPlace(m.width, m.height, false, m.composerMax)
+
+	inputW := maxInt(10, lay.w-13)
+	c.to.Width = inputW
+	c.cc.Width = inputW
+	c.bcc.Width = inputW
+	c.subject.Width = inputW
+
+	bodyRows := lay.h - 8
+	if composeShowCC(c) {
+		// The Cc and Bcc rows appear together and cost a row each.
+		bodyRows -= 2
+	}
+
+	c.body.SetWidth(maxInt(10, lay.w-4))
+	c.body.SetHeight(maxInt(1, bodyRows))
 }
 
 // bg runs work off the render path with a timeout.

@@ -13,13 +13,24 @@ import (
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
 )
 
-// fakeCal records what the calendar was asked to do.
+// fakeCal records what the calendar was asked to do, and on which calendar.
 type fakeCal struct {
 	events  []fcal.Event
 	created []fcal.EventDraft
 	updated []fcal.EventDraft
 	deleted []string
-	err     error
+
+	// createdCal, updatedCal and deletedCal are the calendar IDs the writes
+	// went to, index-aligned with the slices above.
+	createdCal []string
+	updatedCal []string
+	deletedCal []string
+
+	// fetchedFrom and fetchedTo are the windows EventsFrom was asked for.
+	fetchedFrom []time.Time
+	fetchedTo   []time.Time
+
+	err error
 }
 
 func (c *fakeCal) Calendars(context.Context) ([]fcal.Calendar, error) {
@@ -30,7 +41,10 @@ func (c *fakeCal) Events(context.Context, string, time.Time, time.Time) ([]fcal.
 	return c.events, c.err
 }
 
-func (c *fakeCal) EventsFrom(_ context.Context, ids []string, _, _ time.Time) ([]fcal.Event, error) {
+func (c *fakeCal) EventsFrom(_ context.Context, ids []string, from, to time.Time) ([]fcal.Event, error) {
+	c.fetchedFrom = append(c.fetchedFrom, from)
+	c.fetchedTo = append(c.fetchedTo, to)
+
 	if c.err != nil {
 		return nil, c.err
 	}
@@ -50,20 +64,23 @@ func (c *fakeCal) EventsFrom(_ context.Context, ids []string, _, _ time.Time) ([
 	return out, nil
 }
 
-func (c *fakeCal) CreateEvent(_ context.Context, _ string, d fcal.EventDraft) (fcal.Event, error) {
+func (c *fakeCal) CreateEvent(_ context.Context, calID string, d fcal.EventDraft) (fcal.Event, error) {
 	c.created = append(c.created, d)
+	c.createdCal = append(c.createdCal, calID)
 
 	return fcal.Event{ID: "new", Title: d.Title, Start: d.Start, End: d.End}, nil
 }
 
-func (c *fakeCal) UpdateEvent(_ context.Context, _ string, d fcal.EventDraft) (fcal.Event, error) {
+func (c *fakeCal) UpdateEvent(_ context.Context, calID string, d fcal.EventDraft) (fcal.Event, error) {
 	c.updated = append(c.updated, d)
+	c.updatedCal = append(c.updatedCal, calID)
 
 	return fcal.Event{ID: d.ID, Title: d.Title}, nil
 }
 
-func (c *fakeCal) DeleteEvent(_ context.Context, _, id string) error {
+func (c *fakeCal) DeleteEvent(_ context.Context, calID, id string) error {
 	c.deleted = append(c.deleted, id)
+	c.deletedCal = append(c.deletedCal, calID)
 
 	return nil
 }
@@ -411,19 +428,20 @@ func TestTodosWorkWithoutGoogle(t *testing.T) {
 func TestTodosManagerAddsAndCompletes(t *testing.T) {
 	h, _ := calHarness(t)
 
-	var added, completed []string
+	var added []string
+	var completed []int64
 
-	items := []TodoItem{{Title: "Renew the domain"}}
+	items := []TodoItem{{ID: 41, Title: "Renew the domain"}}
 
 	h.m.todos = func(context.Context) ([]TodoItem, error) { return items, nil }
 	h.m.addTodoFn = func(_ context.Context, title string) error {
 		added = append(added, title)
-		items = append(items, TodoItem{Title: title})
+		items = append(items, TodoItem{ID: int64(len(items) + 41), Title: title})
 
 		return nil
 	}
-	h.m.completeTodoFn = func(_ context.Context, title string) error {
-		completed = append(completed, title)
+	h.m.completeTodoFn = func(_ context.Context, id int64) error {
+		completed = append(completed, id)
 
 		return nil
 	}
@@ -445,8 +463,38 @@ func TestTodosManagerAddsAndCompletes(t *testing.T) {
 	h.drain(t, h.m.loadBands())
 	h.press(t, " ")
 
-	if len(completed) != 1 {
-		t.Errorf("completed = %v", completed)
+	if len(completed) != 1 || completed[0] != 41 {
+		t.Errorf("completed = %v, want [41]", completed)
+	}
+}
+
+// Completion goes by ID: two todos sharing a title used to complete
+// whichever the title lookup found first.
+func TestTodosCompleteByIDNotTitle(t *testing.T) {
+	h, _ := calHarness(t)
+
+	var completed []int64
+
+	h.m.todos = func(context.Context) ([]TodoItem, error) {
+		return []TodoItem{
+			{ID: 1, Title: "Call the bank"},
+			{ID: 2, Title: "Call the bank"},
+		}, nil
+	}
+	h.m.completeTodoFn = func(_ context.Context, id int64) error {
+		completed = append(completed, id)
+
+		return nil
+	}
+
+	h.press(t, "s")
+	h.drain(t, h.m.loadBands())
+
+	h.m.band.idx = 1
+	h.press(t, " ")
+
+	if len(completed) != 1 || completed[0] != 2 {
+		t.Errorf("completed = %v, want [2] (the second duplicate)", completed)
 	}
 }
 
@@ -663,6 +711,409 @@ func TestEventDetailShowsEverything(t *testing.T) {
 
 	if h.m.view != viewCalendar {
 		t.Errorf("esc left the view at %v, want the calendar", h.m.view)
+	}
+}
+
+// TestCalendarRefusesWithoutProvider pins the nil guard: m.cal is
+// legitimately nil on a machine that never ran the setup, and c, e and D used
+// to hand a command a nil provider to dereference.
+func TestCalendarRefusesWithoutProvider(t *testing.T) {
+	h, _ := calHarness(t)
+
+	h.m.cal = nil
+	h.m.extraIdx = 0
+
+	for _, k := range []string{"c", "e", "D"} {
+		h.press(t, k)
+
+		if h.m.err == nil {
+			t.Errorf("%s with no provider said nothing", k)
+		}
+
+		if h.m.view != viewCalendar {
+			t.Errorf("%s with no provider left the calendar; view = %v", k, h.m.view)
+		}
+	}
+
+	if h.m.eventForm != nil {
+		t.Error("a form was opened without a provider to save into")
+	}
+
+	// The picker cannot load a list without a provider either; opening it
+	// would show "loading…" forever.
+	h.press(t, "g")
+
+	if h.m.err == nil || h.m.view != viewCalendar {
+		t.Errorf("g with no provider gave view %v, err %v", h.m.view, h.m.err)
+	}
+}
+
+// The picker's keys can be pressed while its list is still loading.
+func TestCalendarPickerHandlesEmptyList(t *testing.T) {
+	h, _ := calHarness(t)
+
+	h.m.picker = &calendarPicker{shown: map[string]bool{}}
+	h.m.push(viewCalendars)
+
+	// Neither may panic on the empty list.
+	h.press(t, "w")
+	h.press(t, " ")
+
+	if h.m.view != viewCalendars {
+		t.Errorf("view = %v, want viewCalendars", h.m.view)
+	}
+}
+
+// A reload can shrink the band's list under its cursor; the next space would
+// then index out of range.
+func TestBandCursorClampsWhenListShrinks(t *testing.T) {
+	h, _ := calHarness(t)
+
+	var completed []int64
+
+	items := []TodoItem{
+		{ID: 1, Title: "One"}, {ID: 2, Title: "Two"}, {ID: 3, Title: "Three"},
+	}
+
+	h.m.todos = func(context.Context) ([]TodoItem, error) { return items, nil }
+	h.m.completeTodoFn = func(_ context.Context, id int64) error {
+		completed = append(completed, id)
+
+		return nil
+	}
+
+	h.press(t, "s")
+	h.drain(t, h.m.loadBands())
+
+	h.m.band.idx = 2
+
+	items = items[:1]
+	h.drain(t, h.m.loadBands())
+
+	if h.m.band.idx != 0 {
+		t.Errorf("after the shrink band.idx = %d, want 0", h.m.band.idx)
+	}
+
+	h.press(t, " ")
+
+	if len(completed) != 1 || completed[0] != 1 {
+		t.Errorf("completed = %v, want [1]", completed)
+	}
+}
+
+// Editing must not silently rewrite what the form has no fields for: the
+// provider does a full PUT, so a draft without AllDay and the attendees turns
+// an all-day event into a timed one and wipes the guest list.
+func TestEditPreservesAllDayAndAttendees(t *testing.T) {
+	h, cal := calHarness(t)
+
+	cal.events[2].Attendees = []string{"ada@example.com", "grace@example.com"}
+	h.drain(t, h.m.loadEvents())
+
+	h.m.extraIdx = 2 // the all-day Trip to Bilbao
+
+	h.press(t, "e")
+
+	if h.m.eventForm == nil || h.m.eventForm.id != "e3" {
+		t.Fatalf("e did not open the form on e3")
+	}
+
+	// Rename it without touching the time fields.
+	h.m.eventForm.title.SetValue("Trip to Donostia")
+	h.press(t, "ctrl+d")
+
+	if len(cal.updated) != 1 {
+		t.Fatalf("updated %d events, want 1", len(cal.updated))
+	}
+
+	got := cal.updated[0]
+
+	if !got.AllDay {
+		t.Error("an untouched all-day event was saved as a timed one")
+	}
+
+	if !got.Start.Equal(cal.events[2].Start) || !got.End.Equal(cal.events[2].End) {
+		t.Errorf("dates changed: %v to %v, want %v to %v",
+			got.Start, got.End, cal.events[2].Start, cal.events[2].End)
+	}
+
+	if len(got.Attendees) != 2 || got.Attendees[0] != "ada@example.com" {
+		t.Errorf("attendees = %v, want both carried", got.Attendees)
+	}
+
+	// Actually changing the times is the one way the form can say "make this
+	// a timed event", so it does.
+	h.m.view = viewCalendar
+	h.m.extraIdx = 2
+
+	h.press(t, "e")
+	h.m.eventForm.when.SetValue("2030-09-10 09:00")
+	h.m.eventForm.duration.SetValue("1h")
+	h.press(t, "ctrl+d")
+
+	if len(cal.updated) != 2 {
+		t.Fatalf("updated %d events, want 2", len(cal.updated))
+	}
+
+	if second := cal.updated[1]; second.AllDay {
+		t.Error("changed times still saved as all-day")
+	} else if second.End.Sub(second.Start) != time.Hour {
+		t.Errorf("length = %v, want 1h", second.End.Sub(second.Start))
+	}
+
+	if got := cal.updated[1].Attendees; len(got) != 2 {
+		t.Errorf("attendees on the timed save = %v, want both carried", got)
+	}
+}
+
+// Edits and deletes go to the calendar the event lives on; only a new event
+// goes to the configured default.
+func TestWritesTargetTheEventsOwnCalendar(t *testing.T) {
+	h, cal := calHarness(t)
+
+	h.m.calendarID = "primary"
+	cal.events[1].CalendarID = "work"
+
+	h.drain(t, h.m.loadEvents())
+
+	// Edit the work event.
+	h.m.extraIdx = 1
+
+	h.press(t, "e")
+	h.m.eventForm.title.SetValue("Lunch, moved")
+	h.press(t, "ctrl+d")
+
+	if len(cal.updatedCal) != 1 || cal.updatedCal[0] != "work" {
+		t.Errorf("update went to %v, want [work]", cal.updatedCal)
+	}
+
+	// Delete it.
+	h.m.view = viewCalendar
+	h.m.extraIdx = 1
+
+	h.press(t, "D")
+
+	if len(cal.deletedCal) != 1 || cal.deletedCal[0] != "work" {
+		t.Errorf("delete went to %v, want [work]", cal.deletedCal)
+	}
+
+	// A new event still goes to the configured calendar.
+	h.m.view = viewCalendar
+
+	h.press(t, "c")
+	h.m.eventForm.title.SetValue("Dentist")
+	h.m.eventForm.when.SetValue("2030-09-10 14:00")
+	h.press(t, "ctrl+d")
+
+	if len(cal.createdCal) != 1 || cal.createdCal[0] != "primary" {
+		t.Errorf("create went to %v, want [primary]", cal.createdCal)
+	}
+}
+
+// The year grid steps whole years and fetches the whole year it shows.
+func TestYearViewStepsYearsAndFetchesTheYear(t *testing.T) {
+	h, cal := calHarness(t)
+
+	h.press(t, "3")
+
+	year := time.Now().Year()
+
+	wantFrom := time.Date(year, time.January, 1, 0, 0, 0, 0, time.Local)
+	wantTo := wantFrom.AddDate(1, 0, 0)
+
+	if n := len(cal.fetchedFrom); n == 0 {
+		t.Fatal("3 fetched nothing")
+	} else if got := cal.fetchedFrom[n-1]; !got.Equal(wantFrom) {
+		t.Errorf("window starts %v, want %v", got, wantFrom)
+	} else if got := cal.fetchedTo[n-1]; !got.Equal(wantTo) {
+		t.Errorf("window ends %v, want %v", got, wantTo)
+	}
+
+	// n steps a whole year forward, p back to where it was.
+	h.press(t, "n")
+
+	if got := h.m.calAnchor().Year(); got != year+1 {
+		t.Errorf("after n the anchor year = %d, want %d", got, year+1)
+	}
+
+	if n := len(cal.fetchedFrom); cal.fetchedFrom[n-1].Year() != year+1 {
+		t.Errorf("after n the window starts in %d, want %d", cal.fetchedFrom[n-1].Year(), year+1)
+	}
+
+	h.press(t, "p")
+
+	if got := h.m.calAnchor().Year(); got != year {
+		t.Errorf("after p the anchor year = %d, want %d", got, year)
+	}
+}
+
+// A slow response from an old window must not overwrite the one on screen.
+func TestStaleEventsResponseIsDropped(t *testing.T) {
+	h, cal := calHarness(t)
+
+	now := time.Now()
+
+	cal.events = []fcal.Event{{ID: "old", Title: "Old", Start: now, End: now.Add(time.Hour)}}
+	slow := h.m.loadEvents()
+	slowMsg := slow() // the response exists, but arrives late
+
+	cal.events = []fcal.Event{{ID: "new", Title: "New", Start: now, End: now.Add(time.Hour)}}
+	fast := h.m.loadEvents()
+
+	h.m.Update(fast())
+	h.m.Update(slowMsg)
+
+	if len(h.m.events) != 1 || h.m.events[0].ID != "new" {
+		t.Errorf("events = %+v, want the newer window to survive", h.m.events)
+	}
+}
+
+// A reload reorders the list; the cursor follows the event it was on, so
+// enter, e and D keep acting on what the user is looking at.
+func TestEventsReloadReanchorsTheCursor(t *testing.T) {
+	h, cal := calHarness(t)
+
+	h.drain(t, h.m.loadEvents())
+
+	h.m.extraIdx = 1 // Lunch
+
+	cal.events = []fcal.Event{cal.events[2], cal.events[1], cal.events[0]}
+	h.drain(t, h.m.loadEvents())
+
+	if e, ok := h.m.selectedEvent(); !ok || e.ID != "e2" {
+		t.Errorf("after the reload the cursor is on %+v, want e2", e)
+	}
+
+	// An event that went away leaves the cursor clamped into the new list.
+	h.m.extraIdx = 2
+	cal.events = cal.events[:1]
+	h.drain(t, h.m.loadEvents())
+
+	if h.m.extraIdx != 0 {
+		t.Errorf("after the shrink extraIdx = %d, want 0", h.m.extraIdx)
+	}
+}
+
+// h and left have to leave the detail view the way esc does.
+func TestEventDetailGoesBackOnH(t *testing.T) {
+	h, _ := calHarness(t)
+
+	h.m.extraIdx = 0
+	h.press(t, "enter")
+
+	if h.m.view != viewEventDetail {
+		t.Fatalf("enter gave view %v", h.m.view)
+	}
+
+	h.press(t, "h")
+
+	if h.m.view != viewCalendar {
+		t.Errorf("h gave view %v, want the calendar", h.m.view)
+	}
+}
+
+// The calendar's Day/Week/Year row is clickable, and a click inside the grid
+// itself does nothing: the grid is not one item per line, so mapping a screen
+// row onto the cursor only scrambled the selection.
+func TestCalendarSubnavClicksAndInertBody(t *testing.T) {
+	h, cal := calHarness(t)
+
+	rows := h.m.chromeRows()
+	if rows.subnav < 0 {
+		t.Fatal("the calendar sub-nav row is not in the click map")
+	}
+
+	line := stripANSI(strings.Split(h.m.header(), "\n")[rows.subnav])
+
+	colOf := func(label string) int {
+		i := strings.Index(line, label)
+		if i < 0 {
+			t.Fatalf("the sub-nav row does not show %q: %q", label, line)
+		}
+
+		return i + len(h.m.gutter())
+	}
+
+	fetches := len(cal.fetchedFrom)
+
+	_, cmd := h.m.click(colOf("Year"), rows.subnav)
+	h.drain(t, cmd)
+
+	if h.m.calView != calendarYear {
+		t.Errorf("clicking Year gave view %v", h.m.calView)
+	}
+
+	if len(cal.fetchedFrom) == fetches {
+		t.Error("clicking Year did not reload the events")
+	}
+
+	_, cmd = h.m.click(colOf("Day"), rows.subnav)
+	h.drain(t, cmd)
+
+	if h.m.calView != calendarDay {
+		t.Errorf("clicking Day gave view %v", h.m.calView)
+	}
+
+	// A click in the grid must not move the selection.
+	h.m.extraIdx = 1
+	before := h.m.extraIdx
+
+	h.m.click(len(h.m.gutter())+10, rows.body+5)
+
+	if h.m.extraIdx != before {
+		t.Errorf("a grid click moved extraIdx from %d to %d", before, h.m.extraIdx)
+	}
+}
+
+// The agenda line covers today, not only events that start today.
+func TestAgendaLineIncludesSpanningEvents(t *testing.T) {
+	h, _ := calHarness(t)
+
+	now := time.Now()
+
+	h.m.events = []fcal.Event{
+		{ID: "trip", Title: "Trip", Start: now.AddDate(0, 0, -1), End: now.AddDate(0, 0, 1)},
+		{ID: "past", Title: "Yesterday only", Start: now.AddDate(0, 0, -1), End: now.AddDate(0, 0, -1).Add(time.Hour)},
+	}
+
+	line := h.m.agendaLine()
+
+	if !strings.Contains(line, "Trip") {
+		t.Errorf("an event spanning today is missing from %q", line)
+	}
+
+	if strings.Contains(line, "Yesterday only") {
+		t.Errorf("an event that ended yesterday appears in %q", line)
+	}
+}
+
+// The default start has to land on :00 or :30 of the wall clock, which
+// Truncate does not do in a zone with a fractional UTC offset.
+func TestNewEventDefaultsToWallClockHalfHour(t *testing.T) {
+	kathmandu := time.FixedZone("UTC+5:45", 5*3600+45*60)
+
+	for _, c := range []struct {
+		minute, want int
+	}{{7, 30}, {29, 30}, {30, 0}, {45, 0}, {0, 30}} {
+		day := time.Date(2030, 5, 3, 10, c.minute, 0, 0, kathmandu)
+
+		got := nextHalfHour(day)
+		if got.Minute() != c.want {
+			t.Errorf("nextHalfHour(10:%02d) = %s, want minute %02d",
+				c.minute, got.Format("15:04"), c.want)
+		}
+
+		if !got.After(day) {
+			t.Errorf("nextHalfHour(10:%02d) = %s did not move forward", c.minute, got.Format("15:04"))
+		}
+	}
+
+	// And the form uses it: a fresh event on a future day starts on a round
+	// half hour of that day's wall clock.
+	f := newEventForm(nil, time.Date(2030, 5, 3, 10, 7, 0, 0, kathmandu))
+
+	if v := f.when.Value(); !strings.HasSuffix(v, ":30") && !strings.HasSuffix(v, ":00") {
+		t.Errorf("a new event defaults to %q, want a round half hour", v)
 	}
 }
 

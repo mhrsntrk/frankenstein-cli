@@ -131,7 +131,11 @@ func (m *Model) handleBandKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.toggleHabit(m.calHabits[b.idx].Name)
 		}
 
-		return m, m.completeTodo(m.calTodos[b.idx].Title)
+		// Completion goes by ID rather than title: two todos can share a
+		// title, and a title lookup would complete whichever came first.
+		todo := m.calTodos[b.idx]
+
+		return m, m.completeTodo(todo.ID, todo.Title)
 
 	case "d":
 		if habits && count > 0 {
@@ -211,13 +215,15 @@ func (m *Model) addTodo(title string) tea.Cmd {
 	})
 }
 
-func (m *Model) completeTodo(title string) tea.Cmd {
+// completeTodo marks one todo done by its ID; the title only names it in the
+// notice.
+func (m *Model) completeTodo(id int64, title string) tea.Cmd {
 	return bg(60*time.Second, func(ctx context.Context) tea.Msg {
 		if m.completeTodoFn == nil {
 			return errMsg{fmt.Errorf("todos are not configured")}
 		}
 
-		if err := m.completeTodoFn(ctx, title); err != nil {
+		if err := m.completeTodoFn(ctx, id); err != nil {
 			return errMsg{err}
 		}
 

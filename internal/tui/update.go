@@ -13,6 +13,7 @@ import (
 	"github.com/mhrsntrk/frankenstein-cli/internal/config"
 	fmail "github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
+	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
 )
 
@@ -21,12 +22,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 
-		if m.compose != nil {
-			m.compose.body.SetWidth(maxInt(20, m.contentWidth()-4))
-			m.compose.body.SetHeight(maxInt(3, m.height-14))
+		m.sizeCompose()
+
+		if m.noteEd != nil {
+			m.noteEd.body.SetWidth(maxInt(20, m.contentWidth()-2))
+			m.noteEd.body.SetHeight(maxInt(3, m.pageSize()-2))
 		}
 
-		if m.view == viewMessage {
+		if m.view == viewNoteRead {
+			m.rewrapNote(m.noteRaw)
+		}
+
+		// The split view wraps the body to the thread pane, so a resize has to
+		// re-flow it whenever a body is on screen, not only in viewMessage.
+		if m.view == viewMessage || (m.splitMail() && len(m.bodyLines) > 0) {
 			m.rewrapBody()
 		}
 
@@ -44,10 +53,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case convsMsg:
-		m.convs = msg
-		m.list.SetPostings(toPostings(msg))
-		m.list.SetCursor(0)
+		// A response overtaken by a newer request describes a listing that is
+		// no longer wanted; applying it would put the old one back.
+		if msg.gen != m.convsGen {
+			return m, nil
+		}
+
+		// The cursor survives a reload by clamping to the new length: an
+		// action-triggered refresh must not throw the reader back to the top.
+		// A box or filter switch resets it explicitly before loading.
+		cursor := m.list.Cursor()
+		m.setPostings(msg.convs)
+		m.list.SetCursor(clamp(cursor, 0, maxInt(0, m.list.Len()-1)))
 		m.list.ClearSelection()
+		m.paneTop = scrollTo(clamp(m.paneTop, 0, maxInt(0, m.list.Len()-1)),
+			m.list.Cursor(), maxInt(1, listPageSize(m.pageSize())))
 		m.loading = false
 
 		// The excerpt line is empty until a body has been decrypted, so ask for
@@ -56,36 +76,127 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sendersMsg:
 		m.senders = msg
-		m.senderIdx = 0
+
+		// Clamp rather than reset: deciding mid-queue reloads the list, and a
+		// cursor thrown back to the top loses the reader's place in it.
+		m.senderIdx = clamp(m.senderIdx, 0, maxInt(0, len(m.senders)-1))
 		m.loading = false
 
 		return m, nil
 
-	case journalMsg:
-		m.journal = msg
-		m.extraIdx = 0
+	case notesMsg:
+		m.notes = msg
+		m.extraIdx = clamp(m.extraIdx, 0, maxInt(0, len(m.notes)-1))
+		m.loading = false
+
+		noun := "notes"
+		if len(msg) == 1 {
+			noun = "note"
+		}
+
+		m.status = fmt.Sprintf("%d %s", len(msg), noun)
+
+		return m, nil
+
+	case noteEditMsg:
+		m.loading = false
+
+		return m.startNoteEdit(msg.name, msg.content)
+
+	case noteMsg:
+		m.openNote = msg.note
+		m.noteRaw = msg.content
+		m.noteTop = 0
+		m.rewrapNote(msg.content)
+		m.loading = false
+
+		if m.view != viewNoteRead {
+			m.push(viewNoteRead)
+		}
 
 		return m, nil
 
 	case threadMsg:
-		m.thread = fmail.Thread(msg)
+		if msg.gen != m.threadGen {
+			return m, nil
+		}
+
+		m.thread = msg.thread
 		m.msgIdx = maxInt(0, len(m.thread.Messages)-1)
-		m.view = viewThread
 		m.loading = false
+
+		// A thread that arrives after the user left the mail section must not
+		// yank them back to it: the data is kept, the view is not adopted.
+		if !m.inMailContext() {
+			return m, nil
+		}
+
+		if m.view != viewCompose {
+			m.view = viewThread
+		}
+
+		// The split view opens a conversation the way Proton does, with the
+		// newest message already expanded, so the body comes along at once
+		// rather than behind another keypress.
+		if m.splitMail() && len(m.thread.Messages) > 0 {
+			m.loading = true
+
+			return m, m.loadBody(m.thread.Messages[m.msgIdx].ID)
+		}
 
 		return m, nil
 
 	case bodyMsg:
-		m.body = fmail.Body(msg)
+		if msg.gen != m.bodyGen {
+			return m, nil
+		}
+
+		m.body = msg.body
 		m.bodyTop = 0
-		m.view = viewMessage
 		m.loading = false
 		m.rewrapBody()
+
+		// Same rule as threadMsg: a slow body must not switch the screen the
+		// user has already navigated away from.
+		if m.inMailContext() && m.view != viewCompose {
+			m.view = viewMessage
+		}
 
 		return m, nil
 
 	case eventsMsg:
+		// A response overtaken by a newer request describes a window no
+		// longer on screen; applying it would put the old window back.
+		if msg.gen != m.eventsGen {
+			return m, nil
+		}
+
+		// Remember what the cursor was on before the slice changes hands.
+		// extraIdx is shared with the notes list, so it is only touched when
+		// the calendar is what it currently indexes.
+		var prev fcal.Event
+
+		onCalendar := m.view == viewCalendar
+		if onCalendar {
+			prev, _ = m.selectedEvent()
+		}
+
 		m.events, m.calErr = msg.events, msg.err
+
+		if onCalendar {
+			// Re-anchor on the event that was selected, so enter, e and D
+			// keep acting on what the user is looking at; an event that went
+			// away leaves the cursor clamped into the new list.
+			m.extraIdx = clamp(m.extraIdx, 0, maxInt(0, len(m.events)-1))
+
+			for i, e := range m.events {
+				if e.ID == prev.ID && e.CalendarID == prev.CalendarID && prev.ID != "" {
+					m.extraIdx = i
+
+					break
+				}
+			}
+		}
 
 		return m, nil
 
@@ -117,20 +228,45 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case bandsMsg:
 		m.calHabits, m.calTodos = msg.habits, msg.todos
 
+		// The band cursor indexes whichever list the open manager shows, and
+		// a reload can shrink it: completing the last todo would leave the
+		// cursor past the end, and the next space would index out of range.
+		if m.band != nil {
+			count := len(m.calTodos)
+			if m.view == viewHabits {
+				count = len(m.calHabits)
+			}
+
+			m.band.idx = clamp(m.band.idx, 0, maxInt(0, count-1))
+		}
+
 		return m, nil
 
 	case snippetsMsg:
 		// Fold the fetched previews into the rows already on screen, keeping
-		// the cursor and the selection where they were.
+		// the cursor and the selection where they were. SetPostings clears the
+		// selection, so it is captured first and re-applied, like the cursor.
 		for i := range m.convs {
 			if s, ok := msg[m.convs[i].ID]; ok {
 				m.convs[i].Snippet = s
 			}
 		}
 
+		var selected []string
+
+		for _, c := range m.convs {
+			if m.list.Selected(heyui.PostingID(c.ID)) {
+				selected = append(selected, c.ID)
+			}
+		}
+
 		cursor := m.list.Cursor()
-		m.list.SetPostings(toPostings(m.convs))
+		m.setPostings(m.convs)
 		m.list.SetCursor(cursor)
+
+		for _, id := range selected {
+			m.list.ToggleSelected(heyui.PostingID(id))
+		}
 
 		return m, nil
 
@@ -141,6 +277,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{m.loadBoxes(), m.loadChrome()}
 		if m.view == viewThreads {
 			cmds = append(cmds, m.loadConvs(m.box.ID, m.filter.Value()))
+		}
+
+		// A screening decision is about a person, so mail that arrived after
+		// the decision has to be routed too. Reapply is idempotent and makes
+		// no provider calls when there is nothing to do.
+		if m.screener != nil {
+			cmds = append(cmds, m.reapplyScreener())
 		}
 
 		return m, tea.Batch(cmds...)
@@ -164,6 +307,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.loadBands())
 		}
 
+		if msg.reloadNotes {
+			// A save closes the editor; a delete closes the reader too, since
+			// what it was reading is gone. A reader left open over an edited
+			// note re-reads it, so the text on screen is the text on disk.
+			if m.view == viewNoteEdit {
+				m.noteEd = nil
+				m.pop()
+			}
+
+			if strings.HasPrefix(msg.note, "deleted ") {
+				if m.view == viewNoteRead {
+					m.view = viewNotes
+				}
+			} else if m.view == viewNoteRead && m.openNote.Path != "" {
+				cmds = append(cmds, m.openNoteCmd(m.openNote))
+			}
+
+			cmds = append(cmds, m.loadNotes())
+		}
+
 		if msg.reloadCalendar {
 			m.eventForm = nil
 
@@ -174,10 +337,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.loadEvents(), m.loadBands())
 		}
 
-		// A compose that succeeded should close itself.
-		if m.view == viewCompose && (msg.note == "sent" || msg.note == "draft saved") {
-			m.compose = nil
-			m.pop()
+		// A compose that was sent closes itself, even one parked as a minimized
+		// bar, which is no longer the view on top. A saved draft only flashes:
+		// the writer is still writing, and the composer stays open remembering
+		// the draft's ID so the next save updates it.
+		if m.compose != nil {
+			if msg.note == "sent" {
+				m.compose = nil
+				m.composerMin, m.composerMax = false, false
+
+				if m.view == viewCompose {
+					m.pop()
+				}
+			} else if msg.draftID != "" {
+				m.compose.draftID = msg.draftID
+			}
 		}
 
 		return m, tea.Batch(cmds...)
@@ -209,6 +383,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleEventFormKey(msg)
 	}
 
+	if m.noteEd != nil && m.view == viewNoteEdit {
+		return m.handleNoteEditKey(msg)
+	}
+
 	if m.band != nil && (m.view == viewHabits || m.view == viewTodos) {
 		return m.handleBandKey(msg)
 	}
@@ -227,6 +405,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filtering = false
 			m.filter.Blur()
 			m.loading = true
+			m.resetMailContext()
 
 			return m, m.loadConvs(m.box.ID, m.filter.Value())
 
@@ -234,6 +413,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filtering = false
 			m.filter.SetValue("")
 			m.filter.Blur()
+			m.resetMailContext()
 
 			return m, m.loadConvs(m.box.ID, "")
 		}
@@ -269,6 +449,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// The notes list and reader have their own verbs, read before the shared
+	// mail letters for the same reason the calendar's are: e is edit here, not
+	// mark-seen, and r reloads the folder rather than syncing mail.
+	if m.view == viewNotes {
+		if model, cmd, handled := m.notesKey(msg); handled {
+			return model, cmd
+		}
+	}
+
+	if m.view == viewNoteRead {
+		if model, cmd, handled := m.noteReadKey(msg); handled {
+			return model, cmd
+		}
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		m.quitting = true
@@ -297,14 +492,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.drillIn()
 
 	case "j", "down":
-		m.moveCursor(1)
-
-		return m, nil
+		return m.moveCursorBy(1)
 
 	case "k", "up":
-		m.moveCursor(-1)
-
-		return m, nil
+		return m.moveCursorBy(-1)
 
 	case "g", "home":
 		m.setCursor(0)
@@ -442,6 +633,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			m.list.ClearSelection()
 			m.filter.SetValue("")
+			m.resetMailContext()
 
 			return m, m.loadConvs(m.box.ID, "")
 		}
@@ -487,6 +679,15 @@ func (m *Model) calendarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		return m, m.loadEvents(), true
 
 	case "c":
+		// Creating, editing and deleting all need a provider, and m.cal is
+		// legitimately nil on a machine that never ran the setup: without the
+		// guard the save command would dereference it and panic.
+		if m.cal == nil {
+			m.err = fcal.ErrNotConfigured
+
+			return m, nil, true
+		}
+
 		m.eventForm = newEventForm(nil, m.calAnchor())
 		m.push(viewEventForm)
 
@@ -504,6 +705,12 @@ func (m *Model) calendarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		return m, nil, true
 
 	case "e":
+		if m.cal == nil {
+			m.err = fcal.ErrNotConfigured
+
+			return m, nil, true
+		}
+
 		e, ok := m.selectedEvent()
 		if !ok {
 			return m, nil, true
@@ -515,6 +722,12 @@ func (m *Model) calendarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		return m, textinput.Blink, true
 
 	case "D":
+		if m.cal == nil {
+			m.err = fcal.ErrNotConfigured
+
+			return m, nil, true
+		}
+
 		e, ok := m.selectedEvent()
 		if !ok {
 			return m, nil, true
@@ -522,7 +735,7 @@ func (m *Model) calendarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 
 		m.loading = true
 
-		return m, m.deleteEvent(e.ID, e.Title), true
+		return m, m.deleteEvent(e.CalendarID, e.ID, e.Title), true
 
 	case "b":
 		model, cmd := m.openHabits()
@@ -575,10 +788,10 @@ func (m *Model) enterSection() tea.Cmd {
 		// account with several calendars drew them all in one colour until
 		// somebody happened to press g.
 		return tea.Batch(m.loadEvents(), m.loadBands(), m.loadCalendars())
-	case sectionJournal:
-		m.view = viewJournal
+	case sectionNotes:
+		m.view = viewNotes
 
-		return m.loadJournal()
+		return m.loadNotes()
 	default:
 		m.view = viewBoxes
 
@@ -658,6 +871,10 @@ func (m *Model) applyLabel(boxName, note string) (tea.Model, tea.Cmd) {
 
 	box, ok := m.boxByName(boxName)
 	if !ok {
+		// Saying why beats a key that silently does nothing: the box being
+		// absent from the cache is a sync problem the user can fix.
+		m.err = fmt.Errorf("no %s box in the cache; run a sync", boxName)
+
 		return m, nil
 	}
 
@@ -756,22 +973,44 @@ func (m *Model) moveMatches() []fmail.Box {
 // --- compose ----------------------------------------------------------------
 
 func (m *Model) startCompose(kind composeKind) (tea.Model, tea.Cmd) {
+	// A half-written draft parked as a minimized bar is restored rather than
+	// silently replaced by a fresh composer over it.
+	if m.compose != nil {
+		m.composerMin = false
+
+		if m.view != viewCompose {
+			m.push(viewCompose)
+		}
+
+		return m, textinput.Blink
+	}
+
+	// The popup draws its own field labels, so the inputs carry no prompt of
+	// their own: a chevron or a gutter bar inside the bordered window is the
+	// kind of double chrome the flat compose view could afford and this one
+	// cannot.
 	to := textinput.New()
 	to.Placeholder = "someone@example.com"
 	to.CharLimit = 500
+	to.Prompt = ""
 
 	cc := textinput.New()
 	cc.CharLimit = 500
+	cc.Prompt = ""
+
+	bcc := textinput.New()
+	bcc.CharLimit = 500
+	bcc.Prompt = ""
 
 	subject := textinput.New()
 	subject.CharLimit = 300
+	subject.Prompt = ""
 
 	body := textarea.New()
-	body.SetWidth(maxInt(20, m.contentWidth()-4))
-	body.SetHeight(maxInt(3, m.height-14))
 	body.ShowLineNumbers = false
+	body.Prompt = ""
 
-	c := &composeState{kind: kind, to: to, cc: cc, subject: subject, body: body}
+	c := &composeState{kind: kind, to: to, cc: cc, bcc: bcc, subject: subject, body: body}
 
 	if kind != composeNew {
 		msg, ok := m.currentMessage()
@@ -781,7 +1020,19 @@ func (m *Model) startCompose(kind composeKind) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		subj := msg.Subject
+		// Quoting needs the decrypted body. Starting the compose without it
+		// would silently send unquoted, so the reply waits for the load it
+		// kicks off here instead.
+		if m.body.MessageID != msg.ID {
+			m.notify("body still loading")
+			m.loading = true
+
+			return m, m.loadBody(msg.ID)
+		}
+
+		// The subject came from the provider; sanitized here because it goes
+		// back on screen through the composer's own input views.
+		subj := terminal.SanitizeLine(msg.Subject)
 
 		switch kind {
 		case composeForward:
@@ -789,6 +1040,11 @@ func (m *Model) startCompose(kind composeKind) (tea.Model, tea.Cmd) {
 				!strings.HasPrefix(strings.ToLower(subj), "fwd:") {
 				subj = "Fwd: " + subj
 			}
+
+			// mail.Draft's only threading field is InReplyTo, so a forward
+			// records its parent there too: the provider still learns which
+			// message the draft descends from.
+			c.inReplyTo = msg.ID
 		default:
 			if !strings.HasPrefix(strings.ToLower(subj), "re:") {
 				subj = "Re: " + subj
@@ -804,12 +1060,27 @@ func (m *Model) startCompose(kind composeKind) (tea.Model, tea.Cmd) {
 		}
 
 		if kind == composeReplyAll {
+			// The reply target is already in To, so it is deduplicated out of
+			// the Cc list along with our own address and repeats.
+			replyTo := msg.From
+			if len(msg.ReplyTo) > 0 {
+				replyTo = msg.ReplyTo[0]
+			}
+
 			var others []string
 
+			seen := map[string]bool{}
+
 			for _, a := range append(append([]fmail.Address{}, msg.To...), msg.CC...) {
-				if !strings.EqualFold(a.Address, m.account) && a.Address != "" {
-					others = append(others, a.Address)
+				key := strings.ToLower(a.Address)
+				if a.Address == "" || seen[key] ||
+					strings.EqualFold(a.Address, m.account) ||
+					strings.EqualFold(a.Address, replyTo.Address) {
+					continue
 				}
+
+				seen[key] = true
+				others = append(others, a.Address)
 			}
 
 			c.cc.SetValue(strings.Join(others, ", "))
@@ -817,17 +1088,16 @@ func (m *Model) startCompose(kind composeKind) (tea.Model, tea.Cmd) {
 
 		c.subject.SetValue(subj)
 
-		// Quoting the body needs it decrypted, which it is whenever the user
-		// has actually read the message.
-		if m.body.MessageID == msg.ID {
-			c.body.SetValue("\n\n" + quote(msg.From.Display(), msg.Time.Format("2 Jan 2006 15:04"), renderBody(m.body)))
-			c.body.CursorStart()
-		}
+		c.body.SetValue("\n\n" + quote(terminal.SanitizeLine(msg.From.Display()),
+			msg.Time.Format("2 Jan 2006 15:04"), terminal.Sanitize(renderBody(m.body))))
+		c.body.CursorStart()
 	}
 
 	c.to.Focus()
 
 	m.compose = c
+	m.composerMin, m.composerMax = false, false
+	m.sizeCompose()
 	m.push(viewCompose)
 
 	return m, textinput.Blink
@@ -850,12 +1120,24 @@ func (m *Model) handleComposeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "esc":
-		m.compose = nil
-		m.pop()
+		// Esc minimizes rather than discards: a draft is work, and losing it
+		// to the same key that closes every other popup was a trap. Discarding
+		// stays on the ✕ and 🗑 buttons.
+		m.composerMin = true
+
+		if m.view == viewCompose {
+			m.pop()
+		}
 
 		return m, nil
 
 	case "ctrl+s":
+		// A save already in flight owns the draft; a second one would race it
+		// and create a duplicate.
+		if m.loading {
+			return m, nil
+		}
+
 		m.loading = true
 
 		return m, m.sendCompose(false)
@@ -863,19 +1145,27 @@ func (m *Model) handleComposeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+d":
 		// Sending is deliberately a two-key chord rather than enter: enter is
 		// a newline in the body, and an accidental send cannot be undone.
+		// While a send is in flight the chord is inert, or holding it would
+		// deliver the mail twice.
+		if m.loading {
+			return m, nil
+		}
+
 		m.loading = true
 
 		return m, m.sendCompose(true)
 
 	case "tab":
-		c.field = (c.field + 1) % 4
+		c.field = (c.field + 1) % 5
 		m.focusComposeField()
+		m.sizeCompose()
 
 		return m, nil
 
 	case "shift+tab":
-		c.field = (c.field + 3) % 4
+		c.field = (c.field + 4) % 5
 		m.focusComposeField()
+		m.sizeCompose()
 
 		return m, nil
 	}
@@ -888,6 +1178,8 @@ func (m *Model) handleComposeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case 1:
 		c.cc, cmd = c.cc.Update(msg)
 	case 2:
+		c.bcc, cmd = c.bcc.Update(msg)
+	case 3:
 		c.subject, cmd = c.subject.Update(msg)
 	default:
 		c.body, cmd = c.body.Update(msg)
@@ -901,6 +1193,7 @@ func (m *Model) focusComposeField() {
 
 	c.to.Blur()
 	c.cc.Blur()
+	c.bcc.Blur()
 	c.subject.Blur()
 	c.body.Blur()
 
@@ -910,6 +1203,8 @@ func (m *Model) focusComposeField() {
 	case 1:
 		c.cc.Focus()
 	case 2:
+		c.bcc.Focus()
+	case 3:
 		c.subject.Focus()
 	default:
 		c.body.Focus()
@@ -931,8 +1226,21 @@ func quote(who, when, body string) string {
 }
 
 // parseAddresses accepts a comma-separated list, with or without display
-// names.
+// names. The whole string goes through the RFC 5322 parser first, because a
+// quoted display name may itself carry a comma — `"Doe, John" <j@x>` — which a
+// naive split would cut in half; the split path remains as the fallback for
+// the bare, human forms the strict parser rejects.
 func parseAddresses(in string) ([]fmail.Address, error) {
+	if list, err := mail.ParseAddressList(in); err == nil && len(list) > 0 {
+		out := make([]fmail.Address, 0, len(list))
+
+		for _, a := range list {
+			out = append(out, fmail.Address{Name: a.Name, Address: a.Address})
+		}
+
+		return out, nil
+	}
+
 	var out []fmail.Address
 
 	for _, part := range strings.Split(in, ",") {
@@ -962,6 +1270,17 @@ func parseAddresses(in string) ([]fmail.Address, error) {
 	return out, nil
 }
 
+// parseOptionalAddresses is parseAddresses for a field that may be empty: a
+// blank Cc is not an error, but a Cc that fails to parse must be said rather
+// than silently dropped.
+func parseOptionalAddresses(in string) ([]fmail.Address, error) {
+	if strings.TrimSpace(in) == "" {
+		return nil, nil
+	}
+
+	return parseAddresses(in)
+}
+
 // --- navigation -------------------------------------------------------------
 
 func (m *Model) goBack() (tea.Model, tea.Cmd) {
@@ -974,12 +1293,19 @@ func (m *Model) goBack() (tea.Model, tea.Cmd) {
 		m.view = viewBoxes
 		m.filter.SetValue("")
 		m.list.ClearSelection()
+	case viewNoteRead:
+		m.view = viewNotes
+	case viewEventDetail:
+		// The detail view's own esc pops the stack; h and left arrive here
+		// instead and have to do the same, or they are dead keys in it.
+		m.pop()
 	case viewScreener, viewCompose, viewMovePicker, viewEventForm,
-		viewHabits, viewTodos, viewCalendars:
+		viewHabits, viewTodos, viewCalendars, viewNoteEdit:
 		m.compose = nil
 		m.eventForm = nil
 		m.band = nil
 		m.picker = nil
+		m.noteEd = nil
 		m.pop()
 	}
 
@@ -996,6 +1322,7 @@ func (m *Model) drillIn() (tea.Model, tea.Cmd) {
 		m.box = m.boxes[m.boxIdx]
 		m.view = viewThreads
 		m.loading = true
+		m.resetMailContext()
 
 		return m, m.loadConvs(m.box.ID, "")
 
@@ -1018,8 +1345,6 @@ func (m *Model) drillIn() (tea.Model, tea.Cmd) {
 
 		return m, m.loadBody(m.thread.Messages[m.msgIdx].ID)
 
-	case viewJournal:
-		return m, nil
 	}
 
 	return m, nil
@@ -1039,8 +1364,10 @@ func (m *Model) itemCount() int {
 		return len(m.senders)
 	case viewCalendar:
 		return len(m.events)
-	case viewJournal:
-		return len(m.journal)
+	case viewNotes:
+		return len(m.notes)
+	case viewNoteRead:
+		return len(m.noteLines)
 	}
 
 	return 0
@@ -1058,9 +1385,34 @@ func (m *Model) pageSize() int {
 	return maxInt(1, m.height-14)
 }
 
+// moveCursorBy moves the cursor and, when the split view's thread pane is what
+// j/k walk, loads the body of the newly selected card the way a click on it
+// does: without this the highlight moved but the pane kept the old message.
+func (m *Model) moveCursorBy(delta int) (tea.Model, tea.Cmd) {
+	prev := m.msgIdx
+
+	m.moveCursor(delta)
+
+	if m.splitMail() && m.view == viewThread && m.msgIdx != prev &&
+		m.msgIdx >= 0 && m.msgIdx < len(m.thread.Messages) {
+		m.bodyTop = 0
+		m.loading = true
+
+		return m, m.loadBody(m.thread.Messages[m.msgIdx].ID)
+	}
+
+	return m, nil
+}
+
 func (m *Model) moveCursor(delta int) {
 	if m.view == viewMessage {
-		m.bodyTop = clamp(m.bodyTop+delta, 0, maxInt(0, len(m.bodyLines)-m.pageSize()))
+		m.bodyTop = clamp(m.bodyTop+delta, 0, maxInt(0, len(m.bodyLines)-m.bodyViewRows()))
+
+		return
+	}
+
+	if m.view == viewNoteRead {
+		m.noteTop = clamp(m.noteTop+delta, 0, maxInt(0, len(m.noteLines)-m.pageSize()))
 
 		return
 	}
@@ -1078,7 +1430,7 @@ func (m *Model) cursor() int {
 		return m.msgIdx
 	case viewScreener:
 		return m.senderIdx
-	case viewCalendar, viewJournal:
+	case viewCalendar, viewNotes:
 		return m.extraIdx
 	}
 
@@ -1099,11 +1451,17 @@ func (m *Model) setCursor(i int) {
 		m.boxFirst = scrollTo(m.boxFirst, i, m.pageSize())
 	case viewThreads:
 		m.list.SetCursor(i)
+
+		// The split view's list pane scrolls itself: it keeps the cursor in
+		// sight the way the single-pane list does through its own renderer.
+		if m.splitMail() {
+			m.paneTop = scrollTo(m.paneTop, i, maxInt(1, listPageSize(m.pageSize())))
+		}
 	case viewThread:
 		m.msgIdx = i
 	case viewScreener:
 		m.senderIdx = i
-	case viewCalendar, viewJournal:
+	case viewCalendar, viewNotes:
 		m.extraIdx = i
 	}
 }

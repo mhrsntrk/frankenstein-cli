@@ -164,7 +164,7 @@ func (m *Model) eventDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		m.pop()
 		m.loading = true
 
-		return m, m.deleteEvent(e.ID, e.Title), true
+		return m, m.deleteEvent(e.CalendarID, e.ID, e.Title), true
 	}
 
 	return m, nil, false

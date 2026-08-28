@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
+	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
 )
 
 // rewrapBody re-flows the decrypted body to the current width.
@@ -15,19 +16,31 @@ import (
 func (m *Model) rewrapBody() {
 	width := maxInt(20, m.contentWidth()-2)
 
+	// The split view reads the body inside the thread pane, so the text wraps
+	// to the pane rather than the whole content column.
+	if m.splitMail() {
+		_, _, threadW := m.paneGeom()
+		width = maxInt(20, threadW-2)
+	}
+
 	var lines []string
 
 	if msg, ok := m.currentMessage(); ok {
-		lines = append(lines,
-			dimStyle.Render("From: ")+msg.From.String(),
-			dimStyle.Render("To:   ")+joinAddrs(msg.To),
-			dimStyle.Render("Date: ")+msg.Time.Format(time.RFC1123),
-		)
+		// The thread pane's card already says who wrote when, so the split
+		// view skips the header block the full-screen reader needs. Headers
+		// and attachment names are provider text, sanitized on their way in.
+		if !m.splitMail() {
+			lines = append(lines,
+				dimStyle.Render("From: ")+terminal.SanitizeLine(msg.From.String()),
+				dimStyle.Render("To:   ")+joinAddrs(msg.To),
+				dimStyle.Render("Date: ")+msg.Time.Format(time.RFC1123),
+			)
+		}
 
 		if len(m.body.Attachments) > 0 {
 			names := make([]string, 0, len(m.body.Attachments))
 			for _, a := range m.body.Attachments {
-				names = append(names, a.Name)
+				names = append(names, terminal.SanitizeLine(a.Name))
 			}
 
 			lines = append(lines, dimStyle.Render("Files: ")+strings.Join(names, ", "))
@@ -36,23 +49,30 @@ func (m *Model) rewrapBody() {
 		lines = append(lines, "")
 	}
 
-	for _, para := range strings.Split(renderBody(m.body), "\n") {
+	// The body is sanitized after the HTML strip and entity decode: an entity
+	// like &#27; decodes into a fresh escape byte, so sanitizing any earlier
+	// would miss it.
+	for _, para := range strings.Split(terminal.Sanitize(renderBody(m.body)), "\n") {
 		lines = append(lines, wrap(para, width)...)
 	}
 
 	m.bodyLines = lines
 }
 
+// joinAddrs renders provider addresses for the reader's header block,
+// sanitized here because this is where they enter a rendered line.
 func joinAddrs(in []mail.Address) string {
 	out := make([]string, 0, len(in))
 	for _, a := range in {
-		out = append(out, a.String())
+		out = append(out, terminal.SanitizeLine(a.String()))
 	}
 
 	return strings.Join(out, ", ")
 }
 
-// wrap breaks a paragraph at word boundaries.
+// wrap breaks a paragraph at word boundaries. Widths are counted in runes on
+// both sides of the comparison: the builder's Len is bytes, and mixing the two
+// wrapped Turkish and any other multi-byte text well short of the margin.
 func wrap(s string, width int) []string {
 	words := strings.Fields(s)
 	if len(words) == 0 {
@@ -62,19 +82,25 @@ func wrap(s string, width int) []string {
 	var (
 		lines []string
 		cur   strings.Builder
+		curW  int
 	)
 
 	for _, w := range words {
+		wl := len([]rune(w))
+
 		switch {
-		case cur.Len() == 0:
+		case curW == 0:
 			cur.WriteString(w)
-		case cur.Len()+1+len([]rune(w)) > width:
+			curW = wl
+		case curW+1+wl > width:
 			lines = append(lines, cur.String())
 			cur.Reset()
 			cur.WriteString(w)
+			curW = wl
 		default:
 			cur.WriteString(" ")
 			cur.WriteString(w)
+			curW += 1 + wl
 		}
 	}
 

@@ -101,7 +101,7 @@ func newHarness(t *testing.T) *harness {
 
 			out := make([]TodoItem, 0, len(all))
 			for _, todo := range all {
-				out = append(out, TodoItem{Title: todo.Title, Done: todo.Done()})
+				out = append(out, TodoItem{ID: todo.ID, Title: todo.Title, Done: todo.Done()})
 			}
 
 			return out, nil
@@ -111,22 +111,21 @@ func newHarness(t *testing.T) *harness {
 
 			return err
 		},
-		Complete: func(ctx context.Context, title string) error {
-			todo, err := ps.TodoByTitle(ctx, title)
-			if err != nil {
-				return err
-			}
-
-			return ps.CompleteTodo(ctx, todo.ID, true)
+		Complete: func(ctx context.Context, id int64) error {
+			return ps.CompleteTodo(ctx, id, true)
 		},
 	}
 
 	m := New(st, fsync.New(p, st), p, sc, ps, nil, todos, nil, cfg)
+
+	// The notes folder must never be the real one: these tests write and
+	// delete files.
+	m.notesDir = filepath.Join(dir, "notes")
+
 	m.width, m.height = 100, 30
 	m.boxes = p.Boxen
 	m.quickBoxes = pickQuickBoxes(p.Boxen, cfg.Screener)
-	m.convs = convs
-	m.list.SetPostings(toPostings(convs))
+	m.setPostings(convs)
 	m.view = viewThreads
 	m.box = p.Boxen[0]
 	m.account = "me@example.com"
@@ -201,6 +200,10 @@ func (h *harness) drain(t *testing.T, cmd tea.Cmd) {
 
 func TestNavigationDrillsInAndBack(t *testing.T) {
 	h := newHarness(t)
+
+	// Below the split threshold the mail views are the classic drill-down;
+	// the split screen's own behavior is pinned separately.
+	h.m.width = 90
 
 	h.press(t, "enter")
 
@@ -409,14 +412,14 @@ func TestComposeOpensAndSends(t *testing.T) {
 	// Typing a subject must not trigger single-letter actions.
 	h.m.compose.field = 0
 	h.m.compose.to.SetValue("someone@example.com")
-	h.m.compose.field = 2
+	h.m.compose.field = 3
 	h.m.compose.subject.SetValue("assassinate")
 
 	if len(h.p.Labelled) != 0 {
 		t.Errorf("typing in compose triggered actions: %v", h.p.Labelled)
 	}
 
-	h.m.compose.field = 3
+	h.m.compose.field = 4
 	h.m.compose.body.SetValue("body text")
 
 	h.press(t, "ctrl+d")
@@ -542,7 +545,7 @@ func TestSectionSwitching(t *testing.T) {
 
 	h.press(t, "tab")
 
-	if h.m.section != sectionJournal || h.m.view != viewJournal {
+	if h.m.section != sectionNotes || h.m.view != viewNotes {
 		t.Errorf("tab twice gave section %v view %v", h.m.section, h.m.view)
 	}
 
@@ -609,7 +612,7 @@ func TestEveryViewRendersWithinWidth(t *testing.T) {
 
 	h.drain(t, h.m.loadSenders())
 
-	h.m.journal = []personal.JournalEntry{{Day: "2026-08-28", Title: "Today"}}
+	h.m.notes = []personal.Note{{Name: "today", Title: "Today", Updated: time.Now()}}
 	h.m.pending = 7
 
 	views := map[string]view{
@@ -619,7 +622,7 @@ func TestEveryViewRendersWithinWidth(t *testing.T) {
 		"message":  viewMessage,
 		"screener": viewScreener,
 		"calendar": viewCalendar,
-		"journal":  viewJournal,
+		"notes":    viewNotes,
 	}
 
 	// Populate the thread and message views.
@@ -733,8 +736,7 @@ func TestViewNeverOverflowsTheTerminal(t *testing.T) {
 		})
 	}
 
-	h.m.convs = many
-	h.m.list.SetPostings(toPostings(many))
+	h.m.setPostings(many)
 	h.m.pending = 7
 
 	sizes := [][2]int{{80, 24}, {100, 30}, {200, 50}, {300, 80}, {120, 14}, {60, 10}}
@@ -746,7 +748,7 @@ func TestViewNeverOverflowsTheTerminal(t *testing.T) {
 		"message":  viewMessage,
 		"screener": viewScreener,
 		"calendar": viewCalendar,
-		"journal":  viewJournal,
+		"notes":    viewNotes,
 	}
 
 	for _, size := range sizes {
@@ -777,8 +779,7 @@ func TestHeaderStaysOnScreen(t *testing.T) {
 		})
 	}
 
-	h.m.convs = many
-	h.m.list.SetPostings(toPostings(many))
+	h.m.setPostings(many)
 	h.m.width, h.m.height = 120, 30
 	h.m.view = viewThreads
 
@@ -844,7 +845,10 @@ func (h *harness) clickAt(t *testing.T, x, y int) {
 
 func TestClickMovesTheCursorThenOpens(t *testing.T) {
 	h := newHarness(t)
-	h.m.width, h.m.height = 120, 30
+
+	// Narrow enough for the single-pane list, where a click deliberately
+	// moves the cursor first and only a second click opens.
+	h.m.width, h.m.height = 90, 30
 
 	// Render once so the chrome measurements are current.
 	_ = h.m.View()
@@ -870,6 +874,104 @@ func TestClickMovesTheCursorThenOpens(t *testing.T) {
 
 	if h.m.view != viewThread {
 		t.Errorf("clicking the selected row gave view %v, want viewThread", h.m.view)
+	}
+}
+
+func TestSplitEnterExpandsTheNewestMessage(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 120, 30
+
+	// On the split screen, opening a conversation fetches the thread and the
+	// newest message's body in one motion, the way Proton's reading pane does.
+	h.press(t, "enter")
+
+	if h.m.view != viewMessage {
+		t.Fatalf("enter on the split list gave view %v, want viewMessage", h.m.view)
+	}
+
+	if len(h.m.bodyLines) == 0 {
+		t.Error("the expanded message has no body lines")
+	}
+}
+
+func TestSplitClickOpensAConversation(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 120, 30
+
+	_ = h.m.View()
+
+	rows := h.m.chromeRows()
+	gutter := len(h.m.gutter())
+
+	// The list pane draws no section headings: conversation i sits at lines
+	// 2i and 2i+1. The first one has a cached body, so a single click carries
+	// all the way to the expanded message.
+	h.clickAt(t, gutter+10, rows.body)
+
+	if h.m.view != viewMessage {
+		t.Fatalf("the click gave view %v, want viewMessage with the thread open", h.m.view)
+	}
+
+	if h.m.thread.Conversation.ID != "c1" {
+		t.Errorf("the open thread is %q, want c1", h.m.thread.Conversation.ID)
+	}
+
+	// The second conversation has no cached messages; the click still moves
+	// the cursor and opens what there is of the thread.
+	h.clickAt(t, gutter+10, rows.body+2)
+
+	if got := h.m.list.Cursor(); got != 1 {
+		t.Fatalf("clicking the second conversation put the cursor at %d, want 1", got)
+	}
+
+	if h.m.thread.Conversation.ID != "c2" {
+		t.Errorf("the open thread is %q, want c2", h.m.thread.Conversation.ID)
+	}
+}
+
+func TestSplitComposerMouse(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 120, 30
+
+	h.press(t, "c")
+
+	if h.m.compose == nil || h.m.view != viewCompose {
+		t.Fatal("c did not open the composer")
+	}
+
+	lay := composerPlace(h.m.width, h.m.height, false, false)
+
+	// A click outside the popup is spent on nothing while it is open.
+	h.clickAt(t, 0, lay.y)
+
+	if h.m.view != viewCompose {
+		t.Fatal("a click outside the open composer reached the screen behind it")
+	}
+
+	// The minimize button parks the popup and hands the screen back.
+	h.clickAt(t, lay.x+lay.w-7, lay.y)
+
+	if h.m.compose == nil || !h.m.composerMin {
+		t.Fatal("the minimize button did not park the composer")
+	}
+
+	if h.m.view == viewCompose {
+		t.Fatal("the minimized composer still holds the view")
+	}
+
+	// The bar restores it.
+	bar := composerPlace(h.m.width, h.m.height, true, false)
+	h.clickAt(t, bar.x+1, bar.y)
+
+	if h.m.composerMin || h.m.view != viewCompose {
+		t.Fatal("clicking the bar did not restore the composer")
+	}
+
+	// The close button discards it.
+	h.clickAt(t, lay.x+lay.w-3, lay.y)
+
+	if h.m.compose != nil || h.m.view == viewCompose {
+		t.Fatal("the close button did not discard the composer")
 	}
 }
 
@@ -948,8 +1050,7 @@ func TestWheelScrollsWithoutMovingTheCursor(t *testing.T) {
 		})
 	}
 
-	h.m.convs = many
-	h.m.list.SetPostings(toPostings(many))
+	h.m.setPostings(many)
 
 	_ = h.m.View()
 
@@ -1023,7 +1124,80 @@ func TestSharedKeysStillWorkInTheCalendar(t *testing.T) {
 	h.press(t, "j")
 	h.press(t, "tab")
 
-	if h.m.section != sectionJournal {
-		t.Errorf("tab from the calendar gave section %v, want journal", h.m.section)
+	if h.m.section != sectionNotes {
+		t.Errorf("tab from the calendar gave section %v, want notes", h.m.section)
+	}
+}
+
+func TestNotesWriteReadDelete(t *testing.T) {
+	h := newHarness(t)
+
+	// Into the Notes section: tab twice from mail.
+	h.press(t, "tab")
+	h.press(t, "tab")
+
+	if h.m.section != sectionNotes || h.m.view != viewNotes {
+		t.Fatalf("section %v view %v, want notes", h.m.section, h.m.view)
+	}
+
+	// A new note: n opens the editor seeded with a heading marker.
+	h.press(t, "n")
+
+	if h.m.view != viewNoteEdit || h.m.noteEd == nil {
+		t.Fatal("n did not open the note editor")
+	}
+
+	h.typeText(t, "Shopping list")
+	h.m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	h.m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	h.typeText(t, "- milk")
+
+	h.press(t, "ctrl+d")
+
+	if h.m.view != viewNotes {
+		t.Fatalf("saving gave view %v, want viewNotes", h.m.view)
+	}
+
+	if len(h.m.notes) != 1 || h.m.notes[0].Title != "Shopping list" {
+		t.Fatalf("saved notes = %+v, want one titled Shopping list", h.m.notes)
+	}
+
+	// The editor keeps letters to itself: typing must not trigger actions.
+	h.press(t, "e")
+
+	if h.m.view != viewNoteEdit {
+		t.Fatal("e did not reopen the editor")
+	}
+
+	h.typeText(t, "q")
+
+	if h.m.quitting {
+		t.Fatal("typing q inside the editor quit the app")
+	}
+
+	h.press(t, "esc")
+
+	// Reading: enter wraps the file into the reader.
+	h.press(t, "enter")
+
+	if h.m.view != viewNoteRead {
+		t.Fatalf("enter gave view %v, want viewNoteRead", h.m.view)
+	}
+
+	if len(h.m.noteLines) == 0 || !strings.Contains(strings.Join(h.m.noteLines, "\n"), "milk") {
+		t.Fatalf("reader lines %q missing the body", h.m.noteLines)
+	}
+
+	h.press(t, "esc")
+
+	if h.m.view != viewNotes {
+		t.Fatalf("esc gave view %v, want viewNotes", h.m.view)
+	}
+
+	// Deleting empties the folder again.
+	h.press(t, "D")
+
+	if len(h.m.notes) != 0 {
+		t.Fatalf("after delete notes = %+v, want none", h.m.notes)
 	}
 }

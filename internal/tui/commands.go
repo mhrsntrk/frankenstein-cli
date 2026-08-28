@@ -10,7 +10,6 @@ import (
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
-	"github.com/mhrsntrk/frankenstein-cli/internal/personal"
 	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
 	fsync "github.com/mhrsntrk/frankenstein-cli/internal/sync"
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
@@ -19,16 +18,33 @@ import (
 // --- messages ---------------------------------------------------------------
 
 type boxesMsg []mail.Box
-type convsMsg []mail.Conversation
-type threadMsg mail.Thread
-type bodyMsg mail.Body
 
-// eventsMsg carries the week, or why there isn't one.
+// convsMsg, threadMsg and bodyMsg carry their request's generation, so the
+// handler can drop a response that was overtaken by a newer request instead of
+// yanking the interface back to what it used to show.
+type convsMsg struct {
+	convs []mail.Conversation
+	gen   int
+}
+
+type threadMsg struct {
+	thread mail.Thread
+	gen    int
+}
+
+type bodyMsg struct {
+	body mail.Body
+	gen  int
+}
+
+// eventsMsg carries the week, or why there isn't one. gen says which
+// loadEvents produced it, so the handler can drop a response that was
+// overtaken by a newer request.
 type eventsMsg struct {
 	events []fcal.Event
 	err    error
+	gen    int
 }
-type journalMsg []personal.JournalEntry
 type sendersMsg []screener.Sender
 type syncedMsg fsync.Result
 type chromeMsg struct {
@@ -44,6 +60,11 @@ type actionMsg struct {
 	rescreen       bool
 	reloadCalendar bool
 	reloadBands    bool
+	reloadNotes    bool
+
+	// draftID is the server's ID for a draft that was just saved, so the open
+	// composer can update it on the next save instead of creating another.
+	draftID string
 }
 
 type errMsg struct{ err error }
@@ -82,6 +103,9 @@ func (m *Model) loadChrome() tea.Cmd {
 }
 
 func (m *Model) loadConvs(boxID, search string) tea.Cmd {
+	m.convsGen++
+	gen := m.convsGen
+
 	return bg(10*time.Second, func(ctx context.Context) tea.Msg {
 		convs, err := m.store.Conversations(ctx, mail.ListOptions{
 			BoxID:  boxID,
@@ -93,7 +117,7 @@ func (m *Model) loadConvs(boxID, search string) tea.Cmd {
 			return errMsg{err}
 		}
 
-		return convsMsg(convs)
+		return convsMsg{convs: convs, gen: gen}
 	})
 }
 
@@ -112,42 +136,33 @@ func (m *Model) loadSenders() tea.Cmd {
 	})
 }
 
-func (m *Model) loadJournal() tea.Cmd {
-	return bg(10*time.Second, func(ctx context.Context) tea.Msg {
-		if m.personal == nil {
-			return journalMsg(nil)
-		}
-
-		entries, err := m.personal.JournalEntries(ctx, 100)
-		if err != nil {
-			return errMsg{err}
-		}
-
-		return journalMsg(entries)
-	})
-}
-
 // --- reads that may reach the network ---------------------------------------
 
 func (m *Model) loadThread(id string) tea.Cmd {
+	m.threadGen++
+	gen := m.threadGen
+
 	return bg(30*time.Second, func(ctx context.Context) tea.Msg {
 		t, err := m.syncer.Thread(ctx, id)
 		if err != nil {
 			return errMsg{err}
 		}
 
-		return threadMsg(t)
+		return threadMsg{thread: t, gen: gen}
 	})
 }
 
 func (m *Model) loadBody(id string) tea.Cmd {
+	m.bodyGen++
+	gen := m.bodyGen
+
 	return bg(30*time.Second, func(ctx context.Context) tea.Msg {
 		b, err := m.syncer.Body(ctx, id)
 		if err != nil {
 			return errMsg{err}
 		}
 
-		return bodyMsg(b)
+		return bodyMsg{body: b, gen: gen}
 	})
 }
 
@@ -161,27 +176,41 @@ func (m *Model) loadEvents() tea.Cmd {
 	anchor := m.calAnchor()
 	start := time.Date(anchor.Year(), anchor.Month(), anchor.Day(), 0, 0, 0, 0, time.Local)
 
-	days := 8
+	var end time.Time
 
-	if m.calView == calendarWeek || m.view != viewCalendar {
+	switch {
+	case m.calView == calendarYear && m.view == viewCalendar:
+		// The year grid shows the anchor's calendar year, so the window is
+		// exactly that: January the 1st to December the 31st.
+		start = time.Date(anchor.Year(), time.January, 1, 0, 0, 0, 0, time.Local)
+		end = start.AddDate(1, 0, 0)
+	case m.calView == calendarWeek || m.view != viewCalendar:
 		// Back up to the Monday the grid starts on.
 		back := (int(start.Weekday()) + 6) % 7
-		start = start.AddDate(0, 0, -back)
-		days = 9
+		start = start.AddDate(0, 0, -back-1)
+		end = start.AddDate(0, 0, 9)
+	default:
+		start = start.AddDate(0, 0, -1)
+		end = start.AddDate(0, 0, 8)
 	}
 
-	start = start.AddDate(0, 0, -1)
+	// The IDs are copied rather than aliased: the picker reassigns
+	// m.calendarIDs on the update goroutine while this one is reading it.
+	ids := append([]string(nil), m.calendarIDs...)
+
+	m.eventsGen++
+	gen := m.eventsGen
 
 	return bg(20*time.Second, func(ctx context.Context) tea.Msg {
-		events, err := m.cal.EventsFrom(ctx, m.calendarIDs, start, start.AddDate(0, 0, days))
+		events, err := m.cal.EventsFrom(ctx, ids, start, end)
 		if err != nil {
 			// A calendar failure must not take the mail client down with it,
 			// but it must not read as an empty week either: that sent someone
 			// looking for missing events when the API was simply switched off.
-			return eventsMsg{err: err}
+			return eventsMsg{err: err, gen: gen}
 		}
 
-		return eventsMsg{events: events}
+		return eventsMsg{events: events, gen: gen}
 	})
 }
 
@@ -214,9 +243,12 @@ func (m *Model) loadBands() tea.Cmd {
 
 		if m.todos != nil {
 			if items, err := m.todos(ctx); err == nil {
-				for i, t := range items {
+				// The store's own ID rides along, because completing goes by
+				// it: an index invented here would complete the wrong todo
+				// once the list reordered.
+				for _, t := range items {
 					out.todos = append(out.todos, heyui.Todo{
-						ID: int64(i + 1), Title: t.Title, Done: t.Done,
+						ID: t.ID, Title: t.Title, Done: t.Done,
 					})
 				}
 			}
@@ -266,14 +298,45 @@ func (m *Model) labelTargets(ids []string, target mail.Box, removeFromCurrent bo
 
 		// Moving out of a system box means unlabelling it; leaving that off is
 		// what turns a "move" into a "copy".
+		removeID := ""
 		if removeFromCurrent && current != "" && current != target.ID {
+			removeID = current
+
 			if err := m.provider.Unlabel(ctx, ids, current); err != nil {
 				return errMsg{err}
 			}
 		}
 
+		// Reflect the move in the cache at once, so the reload that follows
+		// shows the row gone instead of waiting for the next sync tick. A
+		// failure here only delays the disappearance until that sync, so it
+		// is not worth failing the action over.
+		if m.syncer != nil {
+			_ = m.syncer.ApplyLocalMove(ctx, ids, target.ID, removeID)
+		}
+
 		return actionMsg{
 			note:   fmt.Sprintf("%s %s", note, plural(len(ids), "thread", "threads")),
+			reload: true,
+		}
+	})
+}
+
+// reapplyScreener routes mail that arrived after a screening decision, off
+// the render path like every other write.
+func (m *Model) reapplyScreener() tea.Cmd {
+	return bg(60*time.Second, func(ctx context.Context) tea.Msg {
+		n, err := m.screener.Reapply(ctx)
+		if err != nil {
+			return errMsg{err}
+		}
+
+		if n == 0 {
+			return nil
+		}
+
+		return actionMsg{
+			note:   fmt.Sprintf("screener routed %s", plural(n, "thread", "threads")),
 			reload: true,
 		}
 	})
@@ -380,7 +443,8 @@ func (m *Model) markTargets(ids []string, read bool) tea.Cmd {
 	})
 }
 
-// sendCompose saves the draft and, if asked, sends it.
+// sendCompose saves the draft and, if asked, sends it. A draft saved before
+// keeps its ID, so saving again updates it rather than creating a sibling.
 func (m *Model) sendCompose(send bool) tea.Cmd {
 	c := m.compose
 	if c == nil {
@@ -388,21 +452,40 @@ func (m *Model) sendCompose(send bool) tea.Cmd {
 	}
 
 	draft := mail.Draft{
+		ID:        c.draftID,
 		Subject:   c.subject.Value(),
 		Body:      c.body.Value(),
 		MIMEType:  "text/plain",
 		InReplyTo: c.inReplyTo,
 	}
 
+	// A send with neither a subject nor a body is a misfire, not a message.
+	// Refusing it with a reason beats delivering an empty mail.
+	if send && strings.TrimSpace(draft.Subject) == "" && strings.TrimSpace(draft.Body) == "" {
+		return func() tea.Msg {
+			return errMsg{fmt.Errorf("nothing to send: subject and body are both empty")}
+		}
+	}
+
 	to, errTo := parseAddresses(c.to.Value())
-	cc, _ := parseAddresses(c.cc.Value())
+	cc, errCC := parseOptionalAddresses(c.cc.Value())
+	bcc, errBCC := parseOptionalAddresses(c.bcc.Value())
 
 	draft.To = to
 	draft.CC = cc
+	draft.BCC = bcc
 
 	return bg(2*time.Minute, func(ctx context.Context) tea.Msg {
 		if errTo != nil {
 			return errMsg{errTo}
+		}
+
+		if errCC != nil {
+			return errMsg{fmt.Errorf("cc: %w", errCC)}
+		}
+
+		if errBCC != nil {
+			return errMsg{fmt.Errorf("bcc: %w", errBCC)}
 		}
 
 		saved, err := m.provider.Draft(ctx, draft)
@@ -411,7 +494,7 @@ func (m *Model) sendCompose(send bool) tea.Cmd {
 		}
 
 		if !send {
-			return actionMsg{note: "draft saved"}
+			return actionMsg{note: "draft saved", draftID: saved.ID}
 		}
 
 		if _, err := m.provider.Send(ctx, saved.ID); err != nil {
