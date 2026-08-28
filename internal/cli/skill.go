@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
@@ -78,6 +80,16 @@ func newTUICmd(app *App) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 
+			// A full-screen interface has no JSON to offer and nothing to
+			// paint on a pipe; refuse both before touching the terminal.
+			if app.JSON {
+				return fmt.Errorf("the TUI is interactive and has no --json; use the subcommands instead")
+			}
+
+			if !term.IsTerminal(int(os.Stdout.Fd())) {
+				return fmt.Errorf("the TUI needs a terminal; stdout is not one")
+			}
+
 			st, err := app.Store()
 			if err != nil {
 				return err
@@ -123,8 +135,8 @@ func newTUICmd(app *App) *cobra.Command {
 				Add: func(ctx context.Context, title string) error {
 					return addTodo(ctx, app, title)
 				},
-				Complete: func(ctx context.Context, title string) error {
-					return completeTodoByTitle(ctx, app, title)
+				Complete: func(ctx context.Context, id int64) error {
+					return completeTodoByID(ctx, app, id)
 				},
 			}
 

@@ -84,6 +84,27 @@ func newLoginCmd(app *App) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 
+			// Login always asks for a password, so without a terminal on stdin
+			// the prompt would read whatever a pipe happens to hold. Refuse
+			// before asking rather than echo a secret into the wrong channel.
+			if !term.IsTerminal(int(os.Stdin.Fd())) {
+				return fmt.Errorf("login is interactive; run it in a terminal")
+			}
+
+			// The flags win, but an agent driving --json cannot type into a
+			// prompt, so the environment is the second way in.
+			if totp == "" {
+				totp = os.Getenv("FRANKENSTEIN_TOTP")
+			}
+
+			if hvToken == "" {
+				hvToken = os.Getenv("FRANKENSTEIN_HV_TOKEN")
+			}
+
+			if hvMethod == "" {
+				hvMethod = os.Getenv("FRANKENSTEIN_HV_METHODS")
+			}
+
 			cfg, err := app.Config()
 			if err != nil {
 				return err
@@ -131,11 +152,18 @@ func newLoginCmd(app *App) *cobra.Command {
 			var hv *auth.HumanVerification
 			if errors.As(err, &hv) {
 				if app.JSON {
-					return app.Emit(loginResult{
+					if err := app.Emit(loginResult{
 						NeedsHumanVerification: true,
 						VerificationURL:        hv.URL,
 						Message:                "solve the CAPTCHA in a browser, then re-run with --hv-token",
-					}, nil)
+					}, nil); err != nil {
+						return err
+					}
+
+					// A stalled login is not a finished one: the caller keys
+					// off the exit code, so exiting 0 here would read as
+					// logged in.
+					return fmt.Errorf("login stalled on human verification; solve the CAPTCHA and re-run with --hv-token")
 				}
 
 				fmt.Fprintf(app.Err, "\nProton wants a CAPTCHA. Open this, solve it, then press Enter:\n\n  %s\n\n", hv.URL)
@@ -202,9 +230,9 @@ func newLoginCmd(app *App) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&username, "username", "", "proton username or email")
-	cmd.Flags().StringVar(&totp, "totp", "", "two-factor code")
-	cmd.Flags().StringVar(&hvToken, "hv-token", "", "solved human-verification token")
-	cmd.Flags().StringVar(&hvMethod, "hv-methods", "", "human-verification methods, comma separated")
+	cmd.Flags().StringVar(&totp, "totp", "", "two-factor code, or $FRANKENSTEIN_TOTP")
+	cmd.Flags().StringVar(&hvToken, "hv-token", "", "solved human-verification token, or $FRANKENSTEIN_HV_TOKEN")
+	cmd.Flags().StringVar(&hvMethod, "hv-methods", "", "human-verification methods, comma separated, or $FRANKENSTEIN_HV_METHODS")
 
 	return cmd
 }
@@ -214,13 +242,20 @@ func newLogoutCmd(app *App) *cobra.Command {
 		Use:   "logout",
 		Short: "Forget the stored session",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			sessions, err := app.Sessions()
 			if err != nil {
 				return err
 			}
 
-			if err := sessions.Clear(); err != nil {
+			cfg, err := app.Config()
+			if err != nil {
+				return err
+			}
+
+			// Logout revokes the session on Proton's side when it can and
+			// clears the local copy regardless; only the clear can fail.
+			if err := auth.Logout(cmd.Context(), cfg, sessions); err != nil {
 				return err
 			}
 

@@ -11,16 +11,24 @@ import (
 	"github.com/spf13/cobra"
 
 	fmail "github.com/mhrsntrk/frankenstein-cli/internal/mail"
+	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
 )
+
+// editorName resolves which editor to run: $EDITOR, then $VISUAL, then
+// nothing. There is no vi fallback on purpose; a guessed editor opening on a
+// machine that never chose one is worse than an error saying what to set.
+func editorName() string {
+	if e := os.Getenv("EDITOR"); e != "" {
+		return e
+	}
+
+	return os.Getenv("VISUAL")
+}
 
 // openEditor writes a temporary file, opens $EDITOR on it, and returns what
 // the user wrote.
 func openEditor() (string, error) {
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = os.Getenv("VISUAL")
-	}
-
+	editor := editorName()
 	if editor == "" {
 		return "", fmt.Errorf("no body given and $EDITOR is unset; pass --body or pipe the text in")
 	}
@@ -59,10 +67,22 @@ func openEditor() (string, error) {
 }
 
 // parseAddressList accepts comma-separated addresses, with or without names.
+// An empty list comes back as nil with no error: whether a recipient is
+// required is the caller's question, and --cc left unset is not a typo.
 func parseAddressList(in []string) ([]fmail.Address, error) {
 	var out []fmail.Address
 
 	for _, chunk := range in {
+		// A proper parse first, so a quoted name may carry a comma:
+		// `"Doe, John" <j@example.com>` is one address, not two.
+		if addrs, err := mail.ParseAddressList(chunk); err == nil {
+			for _, a := range addrs {
+				out = append(out, fmail.Address{Name: a.Name, Address: a.Address})
+			}
+
+			continue
+		}
+
 		for _, part := range strings.Split(chunk, ",") {
 			part = strings.TrimSpace(part)
 			if part == "" {
@@ -84,10 +104,6 @@ func parseAddressList(in []string) ([]fmail.Address, error) {
 
 			out = append(out, fmail.Address{Name: a.Name, Address: a.Address})
 		}
-	}
-
-	if len(out) == 0 {
-		return nil, fmt.Errorf("no recipients")
 	}
 
 	return out, nil
@@ -116,10 +132,22 @@ func newComposeCmd(app *App) *cobra.Command {
 				return err
 			}
 
-			ccAddrs, _ := parseAddressList(cc)
-			bccAddrs, _ := parseAddressList(bcc)
+			if len(toAddrs) == 0 {
+				return fmt.Errorf("no recipients")
+			}
 
-			text, err := readStdinOrEditor(body)
+			// A typoed --cc must fail loudly, not silently drop the recipient.
+			ccAddrs, err := parseAddressList(cc)
+			if err != nil {
+				return fmt.Errorf("--cc: %w", err)
+			}
+
+			bccAddrs, err := parseAddressList(bcc)
+			if err != nil {
+				return fmt.Errorf("--bcc: %w", err)
+			}
+
+			text, err := readStdinOrEditor(app, body)
 			if err != nil {
 				return err
 			}
@@ -201,7 +229,7 @@ func newReplyCmd(app *App) *cobra.Command {
 				return err
 			}
 
-			text, err := readStdinOrEditor(body)
+			text, err := readStdinOrEditor(app, body)
 			if err != nil {
 				return err
 			}
@@ -265,7 +293,7 @@ func newReplyCmd(app *App) *cobra.Command {
 			}
 
 			return app.Emit(sent, func(w io.Writer) {
-				fmt.Fprintf(w, "Replied to %s\n", msg.From.Display())
+				fmt.Fprintf(w, "Replied to %s\n", terminal.SanitizeLine(msg.From.Display()))
 			})
 		},
 	}
@@ -361,7 +389,7 @@ func newSendCmd(app *App) *cobra.Command {
 			}
 
 			return app.Emit(sent, func(w io.Writer) {
-				fmt.Fprintf(w, "Sent: %s\n", sent.Subject)
+				fmt.Fprintf(w, "Sent: %s\n", terminal.SanitizeLine(sent.Subject))
 			})
 		},
 	}

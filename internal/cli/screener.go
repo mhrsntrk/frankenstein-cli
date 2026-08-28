@@ -10,6 +10,7 @@ import (
 
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
+	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
 )
 
 // newScreener wires a screener against the live provider and cache.
@@ -47,6 +48,12 @@ func newSyncCmd(app *App) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
+
+			// Watch mode never returns and never emits a document, so there is
+			// no JSON to promise. Refusing is the honest contract.
+			if watch && app.JSON {
+				return fmt.Errorf("--watch runs forever and emits no JSON; drop one of the two")
+			}
 
 			syncer, err := app.Syncer(ctx)
 			if err != nil {
@@ -97,14 +104,21 @@ func newSyncCmd(app *App) *cobra.Command {
 				return err
 			}
 
-			// Keep the screener's view of senders current after every sync.
-			if sc, err := newScreener(cmd, app); err == nil {
+			// Keep the screener's view of senders current after every sync,
+			// and route any mail that arrived after a screening decision.
+			if sc, err := newScreener(cmd, app); err != nil {
+				fmt.Fprintf(app.Err, "warning: could not update senders: %v\n", err)
+			} else {
 				n, err := sc.Observe(ctx)
 				if err != nil {
 					fmt.Fprintf(app.Err, "warning: could not update senders: %v\n", err)
 				}
 
 				res.Senders = n
+
+				if _, err := sc.Reapply(ctx); err != nil {
+					fmt.Fprintf(app.Err, "warning: could not reapply screening decisions: %v\n", err)
+				}
 			}
 
 			return app.Emit(res, func(w io.Writer) {
@@ -378,7 +392,7 @@ func newScreenerRouteCmd(app *App) *cobra.Command {
 					fmt.Fprintf(w, "Routed %d list(s) server-side:\n", len(routed))
 
 					for _, n := range routed {
-						fmt.Fprintf(w, "  %s\n", n)
+						fmt.Fprintf(w, "  %s\n", terminal.SanitizeLine(n))
 					}
 				})
 		},
@@ -403,7 +417,12 @@ func newScreenerStatusCmd(app *App) *cobra.Command {
 				return err
 			}
 
-			cfg, _ := app.Config()
+			// A config that failed to load is not the same as a screener that
+			// was never set up; say which one happened.
+			cfg, err := app.Config()
+			if err != nil {
+				fmt.Fprintf(app.Err, "warning: could not read the config: %v\n", err)
+			}
 
 			out := map[string]any{
 				"configured": cfg.Screener.Configured(),

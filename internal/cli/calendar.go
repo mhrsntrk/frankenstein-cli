@@ -294,6 +294,16 @@ func newEventsCmd(app *App) *cobra.Command {
 				return err
 			}
 
+			// A calendar that failed while the others answered, or an event
+			// dropped for an unreadable time, does not fail the listing; the
+			// provider reports it as a warning. It goes to stderr so JSON
+			// output stays clean.
+			if warner, ok := p.(interface{ Warnings() []string }); ok {
+				for _, warning := range warner.Warnings() {
+					fmt.Fprintf(app.Err, "warning: %s\n", warning)
+				}
+			}
+
 			return app.Emit(events, func(w io.Writer) {
 				if len(events) == 0 {
 					fmt.Fprintln(w, "Nothing scheduled.")
@@ -342,6 +352,18 @@ func newEventsCmd(app *App) *cobra.Command {
 // same input.
 func parseWhen(s string) (time.Time, error) { return when.Parse(s) }
 
+// draftEnd turns the end a person typed into the end the draft carries. The
+// date given at --end is the last day an all-day event covers, but the draft
+// hands Google an exclusive end date, so handing it over untouched cut the
+// last day off every multi-day all-day event.
+func draftEnd(endAt time.Time, allDay bool) time.Time {
+	if !allDay {
+		return endAt
+	}
+
+	return endAt.AddDate(0, 0, 1)
+}
+
 func newEventAddCmd(app *App) *cobra.Command {
 	var (
 		start     string
@@ -377,6 +399,8 @@ func newEventAddCmd(app *App) *cobra.Command {
 				if err != nil {
 					return err
 				}
+
+				endAt = draftEnd(endAt, allDay)
 			}
 
 			if !endAt.After(startAt) && !allDay {

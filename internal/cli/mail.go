@@ -12,6 +12,7 @@ import (
 
 	"github.com/mhrsntrk/frankenstein-cli/internal/config"
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
+	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
 )
 
 func saveConfig(cfg config.Config) error { return config.Save(cfg) }
@@ -125,7 +126,7 @@ func newBoxesCmd(app *App) *cobra.Command {
 						unread = fmt.Sprintf("%d", b.Unread)
 					}
 
-					fmt.Fprintf(t, "%s\t%s\t%d\t%s\n", b.Name, b.Kind, b.Total, unread)
+					fmt.Fprintf(t, "%s\t%s\t%d\t%s\n", terminal.SanitizeLine(b.Name), b.Kind, b.Total, unread)
 				}
 
 				t.Flush()
@@ -302,8 +303,13 @@ func newThreadCmd(app *App) *cobra.Command {
 				return err
 			}
 
+			// Emit fixes a nil top-level slice, but this one is a field.
+			if thread.Messages == nil {
+				thread.Messages = []mail.Message{}
+			}
+
 			return app.Emit(thread, func(w io.Writer) {
-				fmt.Fprintf(w, "%s\n", thread.Conversation.Subject)
+				fmt.Fprintf(w, "%s\n", terminal.SanitizeLine(thread.Conversation.Subject))
 				fmt.Fprintf(w, "%d message(s)\n\n", len(thread.Messages))
 
 				t := Table(w)
@@ -342,6 +348,13 @@ func newReadCmd(app *App) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
+			// An agent reading a message should not change its read state as a
+			// side effect, so --json flips the default to false; saying
+			// --mark-read still wins.
+			if app.JSON && !cmd.Flags().Changed("mark-read") {
+				markRead = false
+			}
+
 			st, err := app.Store()
 			if err != nil {
 				return err
@@ -374,15 +387,15 @@ func newReadCmd(app *App) *cobra.Command {
 			}
 
 			return app.Emit(readOutput{Message: msg, Body: body}, func(w io.Writer) {
-				fmt.Fprintf(w, "From:    %s\n", msg.From)
-				fmt.Fprintf(w, "To:      %s\n", joinAddrs(msg.To))
+				fmt.Fprintf(w, "From:    %s\n", terminal.SanitizeLine(msg.From.String()))
+				fmt.Fprintf(w, "To:      %s\n", terminal.SanitizeLine(joinAddrs(msg.To)))
 
 				if len(msg.CC) > 0 {
-					fmt.Fprintf(w, "Cc:      %s\n", joinAddrs(msg.CC))
+					fmt.Fprintf(w, "Cc:      %s\n", terminal.SanitizeLine(joinAddrs(msg.CC)))
 				}
 
 				fmt.Fprintf(w, "Date:    %s\n", msg.Time.Format(time.RFC1123))
-				fmt.Fprintf(w, "Subject: %s\n", msg.Subject)
+				fmt.Fprintf(w, "Subject: %s\n", terminal.SanitizeLine(msg.Subject))
 
 				if len(body.Attachments) > 0 {
 					names := make([]string, 0, len(body.Attachments))
@@ -390,7 +403,7 @@ func newReadCmd(app *App) *cobra.Command {
 						names = append(names, a.Name)
 					}
 
-					fmt.Fprintf(w, "Files:   %s\n", strings.Join(names, ", "))
+					fmt.Fprintf(w, "Files:   %s\n", terminal.SanitizeLine(strings.Join(names, ", ")))
 				}
 
 				fmt.Fprintf(w, "\n%s\n", renderBody(body))
@@ -398,7 +411,7 @@ func newReadCmd(app *App) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&markRead, "mark-read", true, "mark the thread read")
+	cmd.Flags().BoolVar(&markRead, "mark-read", true, "mark the thread read (default false with --json)")
 
 	return cmd
 }
@@ -424,10 +437,12 @@ func joinAddrs(in []mail.Address) string {
 }
 
 // renderBody strips HTML down to something readable in a terminal. This is
-// deliberately crude: a full HTML renderer is not the job here.
+// deliberately crude: a full HTML renderer is not the job here. Whatever route
+// the body takes, it leaves through Sanitize: the sender wrote it, and entity
+// decoding can conjure an escape byte that was not there in the raw HTML.
 func renderBody(b mail.Body) string {
 	if !strings.Contains(strings.ToLower(b.MIMEType), "html") {
-		return b.Content
+		return terminal.Sanitize(b.Content)
 	}
 
 	s := b.Content
@@ -477,7 +492,7 @@ func renderBody(b mail.Body) string {
 		kept = append(kept, l)
 	}
 
-	return strings.TrimSpace(strings.Join(kept, "\n"))
+	return terminal.Sanitize(strings.TrimSpace(strings.Join(kept, "\n")))
 }
 
 func stripElement(s, tag string) string {
@@ -520,11 +535,14 @@ func relTime(t time.Time) string {
 	}
 
 	now := time.Now()
+	age := now.Sub(t)
 
 	switch {
 	case t.YearDay() == now.YearDay() && t.Year() == now.Year():
 		return t.Format("15:04")
-	case now.Sub(t) < 7*24*time.Hour:
+	// The lower bound keeps a timestamp from the future -- a scheduled send, a
+	// wrong clock -- off the weekday form, which would read as last week.
+	case age >= 0 && age < 7*24*time.Hour:
 		return t.Format("Mon 15:04")
 	case t.Year() == now.Year():
 		return t.Format("2 Jan")
@@ -575,7 +593,7 @@ func newLabelCmd(app *App) *cobra.Command {
 
 			return app.Emit(map[string]any{"ok": true, "thread": conv.ID, "box": box.Name, "removed": remove},
 				func(w io.Writer) {
-					fmt.Fprintf(w, "%s %s %s\n", verb, shortID(conv.ID), box.Name)
+					fmt.Fprintf(w, "%s %s %s\n", verb, shortID(conv.ID), terminal.SanitizeLine(box.Name))
 				})
 		},
 	}
@@ -587,22 +605,43 @@ func newLabelCmd(app *App) *cobra.Command {
 
 // readStdinOrEditor gets a message body: from the flag, from a pipe, or by
 // opening $EDITOR.
-func readStdinOrEditor(bodyFlag string) (string, error) {
+func readStdinOrEditor(app *App, bodyFlag string) (string, error) {
+	fi, err := os.Stdin.Stat()
+	piped := err == nil && (fi.Mode()&os.ModeCharDevice) == 0
+
+	return bodyFrom(bodyFlag, piped, app.JSON, func() (string, error) {
+		b, err := io.ReadAll(os.Stdin)
+
+		return string(b), err
+	}, openEditor)
+}
+
+// bodyFrom is readStdinOrEditor's decision, separated from the terminal so it
+// can be tested. The flag wins; a pipe must actually carry text, because an
+// empty one is a broken invocation, not a request for an editor; and the
+// editor only ever opens for a person -- never under --json, never with stdin
+// already claimed by something that is not a keyboard.
+func bodyFrom(bodyFlag string, piped, jsonMode bool, readStdin, edit func() (string, error)) (string, error) {
 	if bodyFlag != "" {
 		return bodyFlag, nil
 	}
 
-	fi, err := os.Stdin.Stat()
-	if err == nil && (fi.Mode()&os.ModeCharDevice) == 0 {
-		b, err := io.ReadAll(os.Stdin)
+	if piped {
+		s, err := readStdin()
 		if err != nil {
 			return "", err
 		}
 
-		if len(strings.TrimSpace(string(b))) > 0 {
-			return string(b), nil
+		if strings.TrimSpace(s) == "" {
+			return "", fmt.Errorf("empty body on stdin")
 		}
+
+		return s, nil
 	}
 
-	return openEditor()
+	if jsonMode {
+		return "", fmt.Errorf("no body given; pass --body or pipe the text in")
+	}
+
+	return edit()
 }

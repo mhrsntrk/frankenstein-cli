@@ -48,7 +48,7 @@ func listTodos(ctx context.Context, app *App) ([]tui.TodoItem, error) {
 
 	out := make([]tui.TodoItem, 0, len(todos))
 	for _, t := range todos {
-		out = append(out, tui.TodoItem{Title: t.Title, Done: t.Done()})
+		out = append(out, tui.TodoItem{ID: t.ID, Title: t.Title, Done: t.Done()})
 	}
 
 	return out, nil
@@ -65,20 +65,15 @@ func addTodo(ctx context.Context, app *App, title string) error {
 	return err
 }
 
-// completeTodoByTitle matches on the title because that is what the calendar
-// ribbon shows; the ribbon carries no IDs.
-func completeTodoByTitle(ctx context.Context, app *App, title string) error {
+// completeTodoByID completes exactly the todo the ribbon shows. It used to
+// match on the title, which completed the wrong todo whenever two shared one.
+func completeTodoByID(ctx context.Context, app *App, id int64) error {
 	ps, err := personalStore(app)
 	if err != nil {
 		return err
 	}
 
-	todo, err := ps.TodoByTitle(ctx, title)
-	if err != nil {
-		return err
-	}
-
-	return ps.CompleteTodo(ctx, todo.ID, true)
+	return ps.CompleteTodo(ctx, id, true)
 }
 
 func newTodoCmd(app *App) *cobra.Command {
@@ -583,7 +578,7 @@ func newJournalWriteCmd(app *App) *cobra.Command {
 
 			text := strings.Join(args, " ")
 			if text == "" {
-				text, err = readStdinOrEditor(body)
+				text, err = readStdinOrEditor(app, body)
 				if err != nil {
 					return err
 				}

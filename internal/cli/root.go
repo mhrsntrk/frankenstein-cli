@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
+	"reflect"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -22,6 +22,7 @@ import (
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/store"
 	fsync "github.com/mhrsntrk/frankenstein-cli/internal/sync"
+	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
 )
 
 // Version is set at build time with -ldflags.
@@ -177,6 +178,13 @@ func (a *App) Close() {
 // promise hold across the whole tree.
 func (a *App) Emit(v any, human func(w io.Writer)) error {
 	if a.JSON {
+		// A nil slice encodes as null, and "no threads" is an empty list, not
+		// the absence of one. Normalizing here keeps the contract without every
+		// command remembering to allocate.
+		if rv := reflect.ValueOf(v); rv.Kind() == reflect.Slice && rv.IsNil() {
+			v = []any{}
+		}
+
 		enc := json.NewEncoder(a.Out)
 		enc.SetIndent("", "  ")
 
@@ -193,9 +201,12 @@ func Table(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 }
 
-// truncate shortens s to n runes, adding an ellipsis when it had to cut.
+// truncate shortens s to n runes, adding an ellipsis when it had to cut. It
+// also sanitizes on the way through: everything the listings truncate came
+// from somewhere else, and a subject line is exactly where an escape sequence
+// would arrive.
 func truncate(s string, n int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
+	s = terminal.SanitizeLine(s)
 
 	r := []rune(s)
 	if len(r) <= n {
@@ -250,6 +261,7 @@ func Run(ctx context.Context) int {
 		newHabitCmd(app),
 		newTimeCmd(app),
 		newJournalCmd(app),
+		newNotesCmd(app),
 		newSkillCmd(app),
 		newTUICmd(app),
 	)
