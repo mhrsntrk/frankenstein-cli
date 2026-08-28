@@ -18,7 +18,7 @@ func TestDumpHeyRows(t *testing.T) {
 	h := newHarness(t)
 	now := time.Now()
 
-	h.m.width, h.m.height = 96, 24
+	h.m.width, h.m.height = 150, 28
 	h.m.convs = []mail.Conversation{
 		{ID: "a", Subject: "Re: contract review, one more clause", Time: now.Add(-2 * time.Hour),
 			NumMessages: 1, NumUnread: 1, Snippet: "Sorry to keep going on about this, but clause 4 still reads as though",
@@ -35,6 +35,12 @@ func TestDumpHeyRows(t *testing.T) {
 	}
 	h.m.list.SetPostings(toPostings(h.m.convs))
 	h.m.box = mail.Box{ID: "b1", Name: "Imbox"}
+	h.m.quickBoxes = []mail.Box{
+		{ID: "b1", Name: "Imbox", Unread: 3}, {ID: "b2", Name: "Feed", Unread: 41},
+		{ID: "b3", Name: "Paper Trail"}, {ID: "b4", Name: "Screened Out"},
+		{ID: "0", Name: "Inbox", Unread: 13}, {ID: "10", Name: "Starred"},
+	}
+	h.m.account = "you@example.com"
 	h.m.pending = 7
 	h.m.view = viewThreads
 	h.m.status = "synced 414 conversations"

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
 )
 
 // Run starts the program.
@@ -55,29 +57,44 @@ func (m *Model) View() string {
 	b.WriteString("\n")
 	b.WriteString(m.footer())
 
-	return b.String()
+	return m.indent(b.String())
 }
 
 // --- chrome -----------------------------------------------------------------
 
+// header draws the four rows above the list, using hey-cli's own renderers so
+// the chrome sits in the same shape as the rows beneath it: a top rule with the
+// account on the right, a centred section row, a rule naming the box, a centred
+// row of numbered boxes, and the screener banner.
 func (m *Model) header() string {
+	w := m.contentWidth()
+
 	var b strings.Builder
 
-	b.WriteString(m.titleBar())
+	b.WriteString(heyui.TopRule(w, "frankenstein", m.account))
 	b.WriteString("\n")
-	b.WriteString(m.navRow())
+
+	b.WriteString(heyui.NavRow([]heyui.NavItem{
+		{Label: "Mail"}, {Label: "Calendar"}, {Label: "Journal"},
+	}, int(m.section), true, w))
 	b.WriteString("\n")
 
 	if m.view == viewBoxes || m.view == viewThreads {
-		if bar := m.boxBar(); bar != "" {
+		b.WriteString(heyui.Rule(w, m.locationName()))
+		b.WriteString("\n")
+
+		if bar := m.boxBar(w); bar != "" {
 			b.WriteString(bar)
 			b.WriteString("\n")
 		}
 
-		if banner := m.screenerBanner(); banner != "" {
+		if banner := m.screenerBanner(w); banner != "" {
 			b.WriteString(banner)
 			b.WriteString("\n")
 		}
+	} else {
+		b.WriteString(heyui.Rule(w, m.locationName()))
+		b.WriteString("\n")
 	}
 
 	if m.view == viewBoxes && len(m.events) > 0 {
@@ -88,53 +105,28 @@ func (m *Model) header() string {
 	return b.String()
 }
 
-// titleBar is "── name ─────────── account ──", sized exactly to the terminal.
-//
-// Widths are computed on plain text and styling applied afterwards, because
-// lipgloss padding is invisible to len() and silently overflows the line.
-func (m *Model) titleBar() string {
-	name := "frankenstein"
-
+// locationName is what the rule under the section row names.
+func (m *Model) locationName() string {
 	switch m.view {
 	case viewThreads:
-		name = m.box.Name
-
 		if n := m.list.SelectionCount(); n > 0 {
-			name = fmt.Sprintf("%s · %d selected", name, n)
+			return fmt.Sprintf("%s · %d selected", m.box.Name, n)
 		}
+
+		return m.box.Name
 	case viewThread, viewMessage:
-		name = m.thread.Conversation.Subject
+		return truncateStr(m.thread.Conversation.Subject, maxInt(10, m.contentWidth()/2))
 	case viewScreener:
-		name = "The Screener"
+		return "The Screener"
 	case viewCompose:
-		name = composeTitle(m.compose)
+		return composeTitle(m.compose)
 	case viewCalendar:
-		name = "Calendar"
+		return "Calendar"
 	case viewJournal:
-		name = "Journal"
+		return "Journal"
+	default:
+		return "Mail"
 	}
-
-	width := maxInt(24, m.width)
-
-	name = truncateStr(name, maxInt(8, width/2))
-
-	const lead = "── "
-
-	left := lead + name + " "
-
-	right := ""
-	if m.account != "" {
-		right = " " + m.account + " ──"
-
-		if len([]rune(left))+len([]rune(right))+4 > width {
-			right = ""
-		}
-	}
-
-	fill := maxInt(0, width-len([]rune(left))-len([]rune(right)))
-
-	return dimStyle.Render(lead) + titleStyle.Render(name) +
-		dimStyle.Render(" "+strings.Repeat("─", fill)+right)
 }
 
 func composeTitle(c *composeState) string {
@@ -154,59 +146,35 @@ func composeTitle(c *composeState) string {
 	}
 }
 
-// navRow is the Mail / Calendar / Journal switcher.
-func (m *Model) navRow() string {
-	var parts []string
-
-	for _, s := range []section{sectionMail, sectionCalendar, sectionJournal} {
-		name := sectionNames[s]
-
-		if s == m.section {
-			parts = append(parts, selectedStyle.Render(" "+name+" "))
-
-			continue
-		}
-
-		parts = append(parts, dimStyle.Render(name))
-	}
-
-	return "  " + strings.Join(parts, "  ")
-}
-
-// boxBar lists the numbered boxes, marking the one being viewed. Keeping every
-// box one keystroke away is what stops navigation feeling like a filesystem.
-func (m *Model) boxBar() string {
+// boxBar is the numbered box switcher, drawn by hey-cli's nav renderer so the
+// shortcut digits are emphasised the way its section row is.
+func (m *Model) boxBar(w int) string {
 	if len(m.quickBoxes) == 0 {
 		return ""
 	}
 
-	var parts []string
+	items := make([]heyui.NavItem, 0, len(m.quickBoxes))
+	selected := -1
 
 	for i, b := range m.quickBoxes {
-		if m.view == viewThreads && b.ID == m.box.ID {
-			parts = append(parts, selectedStyle.Render(fmt.Sprintf(" %d %s%s ", i+1, b.Name, countSuffix(b.Unread))))
-
-			continue
+		label := b.Name
+		if b.Unread > 0 {
+			label = fmt.Sprintf("%s (%d)", b.Name, b.Unread)
 		}
 
-		parts = append(parts,
-			keyStyle.Render(fmt.Sprintf("%d", i+1))+" "+b.Name+dimStyle.Render(countSuffix(b.Unread)))
+		items = append(items, heyui.NavItem{Label: label, Shortcut: fmt.Sprintf("%d", i+1)})
+
+		if m.view == viewThreads && b.ID == m.box.ID {
+			selected = i
+		}
 	}
 
-	return "  " + strings.Join(parts, dimStyle.Render(" · "))
+	return heyui.NavRow(items, selected, m.view == viewThreads, w)
 }
 
-func countSuffix(n int) string {
-	if n <= 0 {
-		return ""
-	}
-
-	return fmt.Sprintf(" (%d)", n)
-}
-
-// screenerBanner keeps the count of waiting senders in front of the user. The
+// screenerBanner keeps the count of waiting senders in front of the reader. The
 // screener is the product; it should not be somewhere you go looking for.
-func (m *Model) screenerBanner() string {
+func (m *Model) screenerBanner(w int) string {
 	if m.pending == 0 {
 		return ""
 	}
@@ -216,7 +184,8 @@ func (m *Model) screenerBanner() string {
 		noun = "sender"
 	}
 
-	return "  " + bannerStyle.Render(fmt.Sprintf(" Screen %d first-time %s · ctrl+s ", m.pending, noun))
+	return heyui.Center(
+		bannerStyle.Render(fmt.Sprintf(" Screen %d first-time %s · ctrl+s ", m.pending, noun)), w)
 }
 
 func (m *Model) agendaLine() string {
@@ -254,7 +223,7 @@ func (m *Model) footer() string {
 	}
 
 	if m.err != nil {
-		return errorStyle.Render(" " + truncateStr(m.err.Error(), maxInt(10, m.width-2)))
+		return errorStyle.Render(" " + truncateStr(m.err.Error(), maxInt(10, m.contentWidth()-2)))
 	}
 
 	if m.flash != "" {
@@ -266,30 +235,64 @@ func (m *Model) footer() string {
 		status = "working…"
 	}
 
-	return statusStyle.Render(" "+status) + "  " + m.keyHints()
+	return heyui.Rule(m.contentWidth(), "") + "\n" +
+		statusStyle.Render(" "+status) + "\n" + m.keyHints()
 }
 
+// keyHints is the footer's key list, wrapped across lines the way hey-cli's
+// is: the whole vocabulary on screen rather than a chosen few.
 func (m *Model) keyHints() string {
+	var groups [][]string
+
 	switch m.view {
 	case viewThreads:
-		return key("enter") + " open " + key("space") + " select " + key("c") + " compose " +
-			key("i") + "/" + key("d") + "/" + key("p") + " screen " + key("a") + " archive " +
-			key("?") + " help"
+		groups = [][]string{
+			{"j/k navigate", "enter open", "1-9 box", "tab section", "/ filter", "q quit"},
+			{"space select", "ctrl+a all", "c compose", "r reply", "f forward", "v move"},
+			{"i imbox", "d feed", "p paper trail", "x screen out", "ctrl+s screener"},
+			{"e seen", "u unseen", "s star", "a archive", "t trash", "! spam", "? help"},
+		}
 	case viewThread, viewMessage:
-		return key("enter") + " read " + key("r") + " reply " + key("f") + " forward " +
-			key("a") + " archive " + key("esc") + " back " + key("?") + " help"
+		groups = [][]string{
+			{"j/k navigate", "enter read", "esc back", "q quit"},
+			{"r reply", "R reply all", "f forward", "a archive", "t trash", "? help"},
+		}
 	case viewScreener:
-		return key("i") + " imbox " + key("d") + " feed " + key("p") + " paper trail " +
-			key("x") + " screen out " + key("esc") + " back"
+		groups = [][]string{
+			{"j/k navigate", "esc back"},
+			{"i imbox", "d feed", "p paper trail", "x screen out"},
+		}
 	case viewCompose:
-		return key("tab") + " field " + key("ctrl+d") + " send " + key("ctrl+s") + " save draft " +
-			key("esc") + " discard"
+		groups = [][]string{{"tab field", "ctrl+d send", "ctrl+s save draft", "esc discard"}}
 	case viewMovePicker:
-		return key("↑↓") + " choose " + key("enter") + " move " + key("esc") + " cancel"
+		groups = [][]string{{"up/down choose", "enter move", "esc cancel"}}
 	default:
-		return key("enter") + " open " + key("tab") + " section " + key("r") + " sync " +
-			key("?") + " help " + key("q") + " quit"
+		groups = [][]string{
+			{"j/k navigate", "enter open", "tab section", "r sync", "? help", "q quit"},
+		}
 	}
+
+	lines := make([]string, 0, len(groups))
+
+	for _, g := range groups {
+		parts := make([]string, 0, len(g))
+
+		for _, item := range g {
+			// The key is everything before the first space; the rest is what it
+			// does, which reads better dim.
+			if i := strings.Index(item, " "); i > 0 {
+				parts = append(parts, key(item[:i])+dimStyle.Render(" "+item[i+1:]))
+
+				continue
+			}
+
+			parts = append(parts, key(item))
+		}
+
+		lines = append(lines, " "+strings.Join(parts, dimStyle.Render(" · ")))
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func key(k string) string { return keyStyle.Render(k) }
@@ -340,22 +343,65 @@ func (m *Model) threadsView() string {
 		return dimStyle.Render("  loading…")
 	}
 
-	// Upstream shows the sections only in the Imbox: every other box is a flat
-	// list, and a heading over one that does not track seen state is noise.
-	m.list.HideSections(!m.isImbox())
+	// The same flag drives the section headings and the unread dot, so turning
+	// it off outside the Imbox also lost the dots. Any box that tracks unread
+	// wants both; Sent and Drafts do not.
+	m.list.HideSections(!m.tracksUnread())
 
 	m.list.SetSize(m.contentWidth(), m.pageSize())
 
 	return m.list.View()
 }
 
-// isImbox reports whether the box on screen is the screener's Imbox.
-func (m *Model) isImbox() bool {
-	return m.cfg.Screener.ImboxID != "" && m.box.ID == m.cfg.Screener.ImboxID
+// tracksUnread reports whether the box on screen has a meaningful read state.
+// Sent and Drafts do not, so a "New for You" heading over them is nonsense.
+func (m *Model) tracksUnread() bool {
+	switch m.box.Name {
+	case "Sent", "Drafts", "Outbox", "All Sent", "All Drafts", "All Scheduled":
+		return false
+	default:
+		return true
+	}
 }
 
+// readableWidth caps how wide a row gets.
+//
+// Upstream has no cap, because a terminal that wide is unusual. On a very wide
+// one an excerpt running the full span is unreadable: the eye loses the line
+// before it reaches the date. This keeps a measured column and centres it.
+const readableWidth = 118
+
 // contentWidth is the width available to a row.
-func (m *Model) contentWidth() int { return maxInt(20, m.width) }
+func (m *Model) contentWidth() int {
+	return minInt(readableWidth, maxInt(20, m.width))
+}
+
+// gutter is the left margin that centres the capped content.
+func (m *Model) gutter() string {
+	pad := (m.width - m.contentWidth()) / 2
+	if pad < 1 {
+		return ""
+	}
+
+	return strings.Repeat(" ", pad)
+}
+
+// indent shifts every line of a block into the centred column.
+func (m *Model) indent(block string) string {
+	g := m.gutter()
+	if g == "" {
+		return block
+	}
+
+	lines := strings.Split(block, "\n")
+	for i, l := range lines {
+		if l != "" {
+			lines[i] = g + l
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
 
 func (m *Model) threadView() string {
 	if m.loading && len(m.thread.Messages) == 0 {

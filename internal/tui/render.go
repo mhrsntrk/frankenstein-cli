@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"html"
 	"strings"
 	"time"
 
@@ -100,10 +101,10 @@ func renderBody(b mail.Body) string {
 		s = stripElement(s, tag)
 	}
 
+	// Block ends become newlines before the tags go, or paragraphs run together.
 	s = strings.NewReplacer(
 		"<br>", "\n", "<br/>", "\n", "<br />", "\n",
 		"</p>", "\n\n", "</div>", "\n", "</tr>", "\n", "</li>", "\n",
-		"&nbsp;", " ", "&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`, "&#39;", "'",
 	).Replace(s)
 
 	var out strings.Builder
@@ -121,7 +122,10 @@ func renderBody(b mail.Body) string {
 		}
 	}
 
-	return collapseBlankLines(out.String())
+	// Entity decoding happens after the tags are gone, and through the standard
+	// library rather than a hand-written list: marketing mail is full of
+	// &#847;, &hairsp; and &euro;, and a partial table leaves them on screen.
+	return collapseBlankLines(html.UnescapeString(out.String()))
 }
 
 // collapseBlankLines squeezes the runs of empty lines that tag stripping
