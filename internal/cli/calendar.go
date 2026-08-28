@@ -198,11 +198,11 @@ The token goes to your system keyring, and "frankenstein logout" clears it.
 // says what to do instead.
 func errNeedsTerminal(err error) error {
 	if errors.Is(err, io.EOF) {
-		// The guidance goes on its own line rather than into the error string,
-		// which convention says should be a single lower-case phrase.
+		// No trailing ellipsis: an error string is a lower-case phrase with no
+		// closing punctuation, and "..." counts.
 		return fmt.Errorf("this needs a terminal to type into; "+
-			"without one, pass the values as flags: "+
-			"%s calendar setup --client-id ... --client-secret ...", config.AppName)
+			"without one, pass --client-id and --client-secret to %s calendar setup",
+			config.AppName)
 	}
 
 	return err
