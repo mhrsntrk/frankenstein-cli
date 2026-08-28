@@ -44,7 +44,8 @@ func tasksService(ctx context.Context, app *App) (*tasks.Service, error) {
 		return nil, err
 	}
 
-	if cfg.Calendar.ClientID == "" {
+	clientID, clientSecret := gcal.Credentials(cfg.Calendar.ClientID, cfg.Calendar.ClientSecret)
+	if clientID == "" {
 		return nil, fmt.Errorf("todos use the Google account; run `frankenstein calendar setup` first")
 	}
 
@@ -53,7 +54,7 @@ func tasksService(ctx context.Context, app *App) (*tasks.Service, error) {
 		return nil, err
 	}
 
-	oc := gcal.OAuthConfig(cfg.Calendar.ClientID, cfg.Calendar.ClientSecret)
+	oc := gcal.OAuthConfig(clientID, clientSecret)
 
 	return tasks.NewService(ctx, option.WithTokenSource(oc.TokenSource(ctx, tok)))
 }

@@ -218,6 +218,9 @@ What it covers, all verified against the live API:
 - Label constants 15 and 16, and the category labels 20-26, which
   `/core/v4/labels` never returns.
 
+`docs/calendar-setup.md` covers the Google side: which scopes are used, and why
+the OAuth client is yours rather than one shipped with the binary.
+
 `docs/proton-api-findings.md` is the evidence behind all of that, including
 which category ID means what and how it was determined.
 

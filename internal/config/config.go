@@ -66,6 +66,10 @@ func (s ScreenerConfig) Configured() bool {
 
 // CalendarConfig holds the Google OAuth client. The token itself lives in the
 // keyring, never here.
+//
+// Leaving ClientID empty falls back to whatever the build was compiled with,
+// so a distributed binary can carry one while a build from source asks for the
+// user's own.
 type CalendarConfig struct {
 	ClientID     string `json:"client_id,omitempty"`
 	ClientSecret string `json:"client_secret,omitempty"`

@@ -21,7 +21,8 @@ func calendarProvider(ctx context.Context, app *App) (fcal.Provider, string, err
 		return nil, "", err
 	}
 
-	if cfg.Calendar.ClientID == "" || cfg.Calendar.ClientSecret == "" {
+	clientID, clientSecret := gcal.Credentials(cfg.Calendar.ClientID, cfg.Calendar.ClientSecret)
+	if clientID == "" {
 		return nil, "", fcal.ErrNotConfigured
 	}
 
@@ -30,7 +31,7 @@ func calendarProvider(ctx context.Context, app *App) (fcal.Provider, string, err
 		return nil, "", err
 	}
 
-	oc := gcal.OAuthConfig(cfg.Calendar.ClientID, cfg.Calendar.ClientSecret)
+	oc := gcal.OAuthConfig(clientID, clientSecret)
 
 	p, err := gcal.New(ctx, oc, tok)
 	if err != nil {
@@ -71,8 +72,9 @@ func newCalendarSetupCmd(app *App) *cobra.Command {
 		Use:   "setup",
 		Short: "Authorise Google Calendar",
 		Long: "Runs the OAuth2 loopback flow and stores the token in the keyring.\n\n" +
-			"You need a Google Cloud OAuth client of type \"Desktop app\". No redirect\n" +
-			"URI needs registering: the loopback flow picks a free local port.",
+			"Unless this build carries one, you need your own Google Cloud OAuth\n" +
+			"client of type \"Desktop app\". No redirect URI needs registering: the\n" +
+			"loopback flow picks a free local port. See docs/calendar-setup.md.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -94,23 +96,33 @@ func newCalendarSetupCmd(app *App) *cobra.Command {
 				cfg.Calendar.CalendarID = calendarID
 			}
 
-			if cfg.Calendar.ClientID == "" {
-				cfg.Calendar.ClientID, err = prompt(app.Err, "google oauth client id: ")
+			// A build may carry a client, in which case there is nothing to ask
+			// for and the user goes straight to the consent screen.
+			id, secret := gcal.Credentials(cfg.Calendar.ClientID, cfg.Calendar.ClientSecret)
+
+			if id == "" {
+				fmt.Fprint(app.Err, googleClientHelp)
+
+				cfg.Calendar.ClientID, err = prompt(app.Err, "client id: ")
 				if err != nil {
 					return err
 				}
-			}
 
-			if cfg.Calendar.ClientSecret == "" {
-				secret, err := promptSecret(app.Err, "google oauth client secret: ")
+				entered, err := promptSecret(app.Err, "client secret: ")
 				if err != nil {
 					return err
 				}
 
-				cfg.Calendar.ClientSecret = string(secret)
+				cfg.Calendar.ClientSecret = string(entered)
+
+				id, secret = cfg.Calendar.ClientID, cfg.Calendar.ClientSecret
 			}
 
-			oc := gcal.OAuthConfig(cfg.Calendar.ClientID, cfg.Calendar.ClientSecret)
+			if id == "" {
+				return fmt.Errorf("a client id is required")
+			}
+
+			oc := gcal.OAuthConfig(id, secret)
 
 			tok, err := gcal.Authorize(ctx, oc, func(url string) {
 				fmt.Fprintf(app.Err, "\nOpen this to authorise:\n\n  %s\n\nWaiting...\n", url)
@@ -140,6 +152,34 @@ func newCalendarSetupCmd(app *App) *cobra.Command {
 
 	return cmd
 }
+
+// googleClientHelp is printed when the user has to make their own OAuth
+// client, which is most of the time: shipping one is a decision with
+// consequences, and this build did not make it.
+const googleClientHelp = `
+This build has no built-in Google client, so it needs yours. It takes a few
+minutes and only has to be done once.
+
+  1. Open https://console.cloud.google.com/projectcreate and make a project.
+
+  2. Enable the two APIs this uses:
+       https://console.cloud.google.com/apis/library/calendar-json.googleapis.com
+       https://console.cloud.google.com/apis/library/tasks.googleapis.com
+
+  3. Under APIs & Services > OAuth consent screen, choose External, fill in
+     the name and your own email, and add yourself under Test users. Leaving
+     it in Testing is fine: it is your own client, used by you.
+
+  4. Under Credentials, create an OAuth client ID of type "Desktop app".
+     No redirect URI is needed; the loopback flow picks a free local port.
+
+  5. Paste the two values below. They go in ~/.config/frankenstein/config.json;
+     the token itself goes to your keyring.
+
+Google warns that the app is unverified. That warning is about your own client,
+which you just made, so "Advanced" then "Go to ... (unsafe)" is the way through.
+
+`
 
 func newCalendarsCmd(app *App) *cobra.Command {
 	return &cobra.Command{
