@@ -12,6 +12,7 @@ import (
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	gcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar/google"
+	"github.com/mhrsntrk/frankenstein-cli/internal/config"
 )
 
 // calendarProvider builds a Google calendar provider from the stored config
@@ -197,10 +198,11 @@ The token goes to your system keyring, and "frankenstein logout" clears it.
 // says what to do instead.
 func errNeedsTerminal(err error) error {
 	if errors.Is(err, io.EOF) {
-		return fmt.Errorf(
-			"this needs a terminal to type into.\n" +
-				"To set it up without one, pass the values as flags:\n\n" +
-				"  frankenstein calendar setup --client-id ... --client-secret ...")
+		// The guidance goes on its own line rather than into the error string,
+		// which convention says should be a single lower-case phrase.
+		return fmt.Errorf("this needs a terminal to type into; "+
+			"without one, pass the values as flags: "+
+			"%s calendar setup --client-id ... --client-secret ...", config.AppName)
 	}
 
 	return err
