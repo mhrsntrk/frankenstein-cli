@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -88,7 +89,7 @@ func TestConversationsAndBoxMembership(t *testing.T) {
 		t.Fatalf("put: %v", err)
 	}
 
-	inbox, err := s.Conversations(ctx, mail.ListOptions{BoxID: "0"})
+	inbox, err := s.Conversations(ctx, mail.ListOptions{BoxID: "0", Desc: true})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -344,6 +345,262 @@ func TestNewslettersRoundTrip(t *testing.T) {
 
 	if n.LastRead != nil {
 		t.Errorf("LastRead should stay nil, got %v", n.LastRead)
+	}
+}
+
+func TestDeleteConversationsRemovesMessages(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	if err := s.PutConversations(ctx, []mail.Conversation{
+		{ID: "c1", Subject: "x", Time: time.Now(), BoxIDs: []string{"0"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.PutMessages(ctx, []mail.Message{
+		{ID: "m1", ConversationID: "c1"},
+		{ID: "m2", ConversationID: "c1"},
+		{ID: "m3", ConversationID: "c2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteConversations(ctx, []string{"c1"}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	msgs, _ := s.Messages(ctx, "c1")
+	if len(msgs) != 0 {
+		t.Errorf("conversation delete orphaned its messages: %+v", msgs)
+	}
+
+	// Another thread's messages are none of the delete's business.
+	if _, err := s.Message(ctx, "m3"); err != nil {
+		t.Errorf("unrelated message deleted: %v", err)
+	}
+}
+
+func TestApplyMove(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	if err := s.PutBoxes(ctx, []mail.Box{
+		{ID: "0", Name: "Inbox", Kind: mail.BoxSystem, Total: 2, Unread: 1},
+		{ID: "6", Name: "Archive", Kind: mail.BoxSystem},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+
+	if err := s.PutConversations(ctx, []mail.Conversation{
+		{ID: "c1", Subject: "unread", Time: now, NumUnread: 1, BoxIDs: []string{"0"}},
+		{ID: "c2", Subject: "read", Time: now.Add(-time.Hour), BoxIDs: []string{"0"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The ghost ID is skipped: there is nothing local to move.
+	if err := s.ApplyMove(ctx, []string{"c1", "c2", "ghost"}, "6", "0"); err != nil {
+		t.Fatalf("apply move: %v", err)
+	}
+
+	archived, err := s.Conversations(ctx, mail.ListOptions{BoxID: "6", Desc: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(archived) != 2 {
+		t.Fatalf("got %d in the target box, want 2: %+v", len(archived), archived)
+	}
+
+	inbox, _ := s.Conversations(ctx, mail.ListOptions{BoxID: "0"})
+	if len(inbox) != 0 {
+		t.Errorf("source box still holds moved threads: %+v", inbox)
+	}
+
+	// Counters moved with the rows: everything left the inbox, the one
+	// unread thread carried its unread count along.
+	src, _ := s.Box(ctx, "0")
+	if src.Total != 0 || src.Unread != 0 {
+		t.Errorf("source counters wrong: total=%d unread=%d", src.Total, src.Unread)
+	}
+
+	dst, _ := s.Box(ctx, "6")
+	if dst.Total != 2 || dst.Unread != 1 {
+		t.Errorf("target counters wrong: total=%d unread=%d", dst.Total, dst.Unread)
+	}
+}
+
+func TestSearchEscapesLikeWildcards(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	now := time.Now().Truncate(time.Second)
+
+	if err := s.PutConversations(ctx, []mail.Conversation{
+		{ID: "c1", Subject: "100% off", Time: now},
+		{ID: "c2", Subject: "100g off", Time: now.Add(-time.Minute)},
+		{ID: "c3", Subject: "a_b", Time: now.Add(-2 * time.Minute)},
+		{ID: "c4", Subject: "aXb", Time: now.Add(-3 * time.Minute)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Conversations(ctx, mail.ListOptions{Search: "100%"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) != 1 || got[0].ID != "c1" {
+		t.Errorf("%% was treated as a wildcard: %+v", got)
+	}
+
+	got, _ = s.Conversations(ctx, mail.ListOptions{Search: "a_b"})
+	if len(got) != 1 || got[0].ID != "c3" {
+		t.Errorf("_ was treated as a wildcard: %+v", got)
+	}
+}
+
+func TestConversationsOrderAndOffset(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+
+	now := time.Now().Truncate(time.Second)
+
+	if err := s.PutConversations(ctx, []mail.Conversation{
+		{ID: "c1", Subject: "oldest", Time: now.Add(-2 * time.Hour)},
+		{ID: "c2", Subject: "middle", Time: now.Add(-time.Hour)},
+		{ID: "c3", Subject: "newest", Time: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	desc, err := s.Conversations(ctx, mail.ListOptions{Desc: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(desc) != 3 || desc[0].ID != "c3" {
+		t.Errorf("Desc did not list newest first: %+v", desc)
+	}
+
+	asc, _ := s.Conversations(ctx, mail.ListOptions{})
+	if len(asc) != 3 || asc[0].ID != "c1" {
+		t.Errorf("unset Desc did not list oldest first: %+v", asc)
+	}
+
+	// A bare Offset without a Limit must still skip rows.
+	rest, _ := s.Conversations(ctx, mail.ListOptions{Offset: 1})
+	if len(rest) != 2 || rest[0].ID != "c2" {
+		t.Errorf("bare offset ignored: %+v", rest)
+	}
+}
+
+// TestMigrateFromV0 opens a database laid out the way the first release wrote
+// it — no snippet column, no version stamp, orphaned messages — and expects
+// Open to bring it fully current.
+func TestMigrateFromV0(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "cache.db")
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := db.Exec(`
+		CREATE TABLE conversations (
+		    id              TEXT PRIMARY KEY,
+		    subject         TEXT NOT NULL DEFAULT '',
+		    senders         TEXT NOT NULL DEFAULT '[]',
+		    recipients      TEXT NOT NULL DEFAULT '[]',
+		    num_messages    INTEGER NOT NULL DEFAULT 0,
+		    num_unread      INTEGER NOT NULL DEFAULT 0,
+		    num_attachments INTEGER NOT NULL DEFAULT 0,
+		    time            INTEGER NOT NULL DEFAULT 0,
+		    size            INTEGER NOT NULL DEFAULT 0,
+		    category_id     TEXT NOT NULL DEFAULT '',
+		    sort_order      INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE TABLE messages (
+		    id              TEXT PRIMARY KEY,
+		    conversation_id TEXT NOT NULL DEFAULT '',
+		    subject         TEXT NOT NULL DEFAULT '',
+		    from_addr       TEXT NOT NULL DEFAULT '{}',
+		    to_addrs        TEXT NOT NULL DEFAULT '[]',
+		    cc_addrs        TEXT NOT NULL DEFAULT '[]',
+		    bcc_addrs       TEXT NOT NULL DEFAULT '[]',
+		    reply_to_addrs  TEXT NOT NULL DEFAULT '[]',
+		    time            INTEGER NOT NULL DEFAULT 0,
+		    size            INTEGER NOT NULL DEFAULT 0,
+		    unread          INTEGER NOT NULL DEFAULT 0,
+		    category_id     TEXT NOT NULL DEFAULT '',
+		    newsletter_id   TEXT NOT NULL DEFAULT '',
+		    num_attachments INTEGER NOT NULL DEFAULT 0,
+		    spam_score      INTEGER NOT NULL DEFAULT 0,
+		    is_draft        INTEGER NOT NULL DEFAULT 0,
+		    snoozed_until   INTEGER,
+		    external_id     TEXT NOT NULL DEFAULT '',
+		    box_ids         TEXT NOT NULL DEFAULT '[]',
+		    sort_order      INTEGER NOT NULL DEFAULT 0
+		);
+		INSERT INTO conversations (id, subject) VALUES ('c1', 'kept');
+		INSERT INTO messages (id, conversation_id) VALUES
+		    ('m1', 'c1'),
+		    ('m2', 'ghost'),
+		    ('m3', '');
+	`); err != nil {
+		t.Fatalf("write v0 database: %v", err)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open v0 database: %v", err)
+	}
+
+	t.Cleanup(func() { s.Close() })
+
+	// v1: the snippet column exists and works.
+	if err := s.SetSnippet(ctx, "c1", "preview"); err != nil {
+		t.Fatalf("snippet column missing after migration: %v", err)
+	}
+
+	c, err := s.Conversation(ctx, "c1")
+	if err != nil {
+		t.Fatalf("read migrated conversation: %v", err)
+	}
+
+	if c.Snippet != "preview" {
+		t.Errorf("snippet = %q, want preview", c.Snippet)
+	}
+
+	// v2: the orphan is gone, its legitimate siblings are not.
+	if _, err := s.Message(ctx, "m2"); err != mail.ErrNotFound {
+		t.Errorf("orphaned message survived migration: %v", err)
+	}
+
+	if _, err := s.Message(ctx, "m1"); err != nil {
+		t.Errorf("owned message lost in migration: %v", err)
+	}
+
+	if _, err := s.Message(ctx, "m3"); err != nil {
+		t.Errorf("draft message lost in migration: %v", err)
+	}
+
+	// The version stamp means none of this runs again.
+	var version int
+	if err := s.DB().QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+
+	if version == 0 {
+		t.Error("migration left no version stamp")
 	}
 }
 

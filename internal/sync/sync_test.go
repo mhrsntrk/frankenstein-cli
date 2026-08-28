@@ -206,6 +206,251 @@ func TestNewslettersUnsupportedIsNotAnError(t *testing.T) {
 	}
 }
 
+func TestBackfillPurgesServerDeletedConversations(t *testing.T) {
+	ctx := context.Background()
+	p, st, s := setup(t)
+
+	if _, err := s.Once(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// Cache c2's messages too, so the purge can be seen taking them along.
+	p.Msgs["c2"] = []mail.Message{{ID: "m2", ConversationID: "c2", Subject: "Two"}}
+
+	if _, err := s.Thread(ctx, "c2"); err != nil {
+		t.Fatalf("thread: %v", err)
+	}
+
+	// c2 vanishes server-side while the cursor is too old to say so; the
+	// resync backfill has to notice on its own.
+	p.Convs = p.Convs[:1]
+
+	res, err := s.Backfill(ctx)
+	if err != nil {
+		t.Fatalf("resync backfill: %v", err)
+	}
+
+	if res.Purged != 1 {
+		t.Errorf("purged %d conversations, want 1", res.Purged)
+	}
+
+	if _, err := st.Conversation(ctx, "c2"); err != mail.ErrNotFound {
+		t.Errorf("server-deleted conversation survived the backfill: %v", err)
+	}
+
+	msgs, _ := st.Messages(ctx, "c2")
+	if len(msgs) != 0 {
+		t.Errorf("purge left messages behind: %+v", msgs)
+	}
+
+	if _, err := st.Conversation(ctx, "c1"); err != nil {
+		t.Errorf("live conversation was purged: %v", err)
+	}
+}
+
+func TestBackfillSweepStaysInsideItsDepth(t *testing.T) {
+	ctx := context.Background()
+	_, st, s := setup(t)
+
+	if _, err := s.Once(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// A shallower pass sees only the newest thread. c2 is deeper than the
+	// pass covered, so the sweep must not mistake unseen for deleted.
+	s.BackfillDepth = 1
+
+	res, err := s.Backfill(ctx)
+	if err != nil {
+		t.Fatalf("shallow backfill: %v", err)
+	}
+
+	if res.Purged != 0 {
+		t.Errorf("purged %d conversations beyond the backfill window", res.Purged)
+	}
+
+	if _, err := st.Conversation(ctx, "c2"); err != nil {
+		t.Errorf("conversation below the depth window was purged: %v", err)
+	}
+}
+
+func TestIncrementalAppliesEventsInOrder(t *testing.T) {
+	ctx := context.Background()
+	p, st, s := setup(t)
+
+	if _, err := s.Once(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+
+	// Delete then recreate in one delta. Batched by kind this nets out to
+	// the wrong end state; in stream order the recreate wins.
+	p.Deltas = []mail.Delta{{
+		Cursor: "cursor-1",
+		Conversations: []mail.ConversationChange{
+			{Kind: mail.ChangeDelete, ID: "c1"},
+			{Kind: mail.ChangeCreate, ID: "c1", Conversation: mail.Conversation{
+				ID: "c1", Subject: "One again", Time: now, NumMessages: 1,
+				BoxIDs: []string{"0"},
+			}},
+		},
+	}}
+
+	if _, err := s.Once(ctx); err != nil {
+		t.Fatalf("incremental: %v", err)
+	}
+
+	c, err := st.Conversation(ctx, "c1")
+	if err != nil {
+		t.Fatalf("recreated conversation missing: %v", err)
+	}
+
+	if c.Subject != "One again" {
+		t.Errorf("subject = %q, want the recreated one", c.Subject)
+	}
+}
+
+func TestUpdateEventDoesNotClobberWithZeroes(t *testing.T) {
+	ctx := context.Background()
+	p, st, s := setup(t)
+
+	if _, err := s.Once(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// An update carrying only the changed count: zero Time, empty subject,
+	// no senders. Only NumUnread going to 0 is a real change here.
+	p.Deltas = []mail.Delta{{
+		Cursor: "cursor-1",
+		Conversations: []mail.ConversationChange{
+			{Kind: mail.ChangeUpdate, ID: "c1", Conversation: mail.Conversation{
+				ID: "c1", NumUnread: 0,
+			}},
+		},
+	}}
+
+	if _, err := s.Once(ctx); err != nil {
+		t.Fatalf("incremental: %v", err)
+	}
+
+	c, err := st.Conversation(ctx, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if c.NumUnread != 0 {
+		t.Errorf("the real change was dropped: unread = %d", c.NumUnread)
+	}
+
+	if c.Subject != "One" || c.NumMessages != 1 || c.Time.Unix() <= 0 {
+		t.Errorf("partial update clobbered cached fields: %+v", c)
+	}
+
+	if !has(c.BoxIDs, "0") {
+		t.Errorf("partial update wiped box membership: %v", c.BoxIDs)
+	}
+}
+
+func TestMessageOnlyDeltaRefreshesBoxes(t *testing.T) {
+	ctx := context.Background()
+	p, st, s := setup(t)
+
+	if _, err := s.Once(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// A message marked read moves its box's unread count without any
+	// conversation event, so a message-only delta must refresh boxes too.
+	p.Boxen[0].Unread = 5
+
+	p.Deltas = []mail.Delta{{
+		Cursor: "cursor-1",
+		Messages: []mail.MessageChange{
+			{Kind: mail.ChangeUpdate, ID: "m1", Message: mail.Message{
+				ID: "m1", ConversationID: "c1", Subject: "One",
+			}},
+		},
+	}}
+
+	if _, err := s.Once(ctx); err != nil {
+		t.Fatalf("incremental: %v", err)
+	}
+
+	box, err := st.Box(ctx, "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if box.Unread != 5 {
+		t.Errorf("box unread = %d after message-only delta, want 5", box.Unread)
+	}
+}
+
+func TestThreadKeepsNewerCachedHeader(t *testing.T) {
+	ctx := context.Background()
+	p, st, s := setup(t)
+
+	if _, err := s.Once(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// The incremental loop got ahead of this thread fetch: the cache holds a
+	// higher Order than the snapshot the provider will return.
+	if err := st.PutConversations(ctx, []mail.Conversation{{
+		ID: "c1", Subject: "Newer", Time: time.Now(), NumMessages: 2,
+		BoxIDs: []string{"0"}, Order: 10,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	p.Convs[0].Order = 5
+
+	if _, err := s.Thread(ctx, "c1"); err != nil {
+		t.Fatalf("thread: %v", err)
+	}
+
+	c, err := st.Conversation(ctx, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if c.Subject != "Newer" {
+		t.Errorf("stale thread snapshot overwrote a newer cached header: %+v", c)
+	}
+
+	// The messages are new data either way and must still be cached.
+	msgs, _ := st.Messages(ctx, "c1")
+	if len(msgs) != 1 {
+		t.Errorf("thread messages not cached: %+v", msgs)
+	}
+}
+
+func TestApplyLocalMove(t *testing.T) {
+	ctx := context.Background()
+	_, st, s := setup(t)
+
+	if _, err := s.Once(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	if err := s.ApplyLocalMove(ctx, []string{"c1"}, "6", "0"); err != nil {
+		t.Fatalf("apply move: %v", err)
+	}
+
+	archived, _ := st.Conversations(ctx, mail.ListOptions{BoxID: "6", Desc: true})
+	if len(archived) != 1 || archived[0].ID != "c1" {
+		t.Errorf("move did not land in the target box: %+v", archived)
+	}
+
+	inbox, _ := st.Conversations(ctx, mail.ListOptions{BoxID: "0", Desc: true})
+	for _, c := range inbox {
+		if c.ID == "c1" {
+			t.Errorf("moved conversation still in the source box: %+v", inbox)
+		}
+	}
+}
+
 func has(hay []string, needle string) bool {
 	for _, h := range hay {
 		if h == needle {

@@ -40,12 +40,6 @@ func Open(path string) (*Store, error) {
 	// modernc's driver is not safe for unlimited concurrent writers.
 	db.SetMaxOpenConns(1)
 
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
-
-		return nil, fmt.Errorf("migrate cache: %w", err)
-	}
-
 	if err := migrate(db); err != nil {
 		db.Close()
 
@@ -55,23 +49,90 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// migrate applies changes that CREATE TABLE IF NOT EXISTS cannot: an existing
-// cache keeps its old shape, so new columns have to be added explicitly.
-//
-// Each statement is expected to fail on a database that already has it, which
-// is why a duplicate-column error is success rather than a problem.
+// migrations are the steps an existing cache may need on top of the base
+// schema, in order. PRAGMA user_version records how many have run, so each
+// step runs exactly once; a fresh database is created by schema.sql already in
+// its final shape and is stamped current without running any of them.
+var migrations = []func(*sql.Tx) error{
+	// v1: the snippet column predates versioned migrations, so an old cache
+	// may or may not already have it.
+	func(tx *sql.Tx) error {
+		var n int
+		if err := tx.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'snippet'`).Scan(&n); err != nil {
+			return err
+		}
+
+		if n > 0 {
+			return nil
+		}
+
+		_, err := tx.Exec(`ALTER TABLE conversations ADD COLUMN snippet TEXT NOT NULL DEFAULT ''`)
+
+		return err
+	},
+	// v2: conversation deletes used to leave the thread's messages behind.
+	// Messages with an empty conversation_id (upstream drafts) are kept.
+	func(tx *sql.Tx) error {
+		_, err := tx.Exec(`DELETE FROM messages
+			WHERE conversation_id != ''
+			  AND conversation_id NOT IN (SELECT id FROM conversations)`)
+
+		return err
+	},
+}
+
+// migrate brings the database to the current schema: the base schema first
+// (CREATE IF NOT EXISTS, so it is safe to repeat), then whichever versioned
+// steps this file has not yet seen.
 func migrate(db *sql.DB) error {
-	statements := []string{
-		`ALTER TABLE conversations ADD COLUMN snippet TEXT NOT NULL DEFAULT ''`,
+	// A database without the conversations table is brand new: schema.sql
+	// creates it in its final shape, so no migration has anything to do.
+	var tables int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'conversations'`).Scan(&tables); err != nil {
+		return fmt.Errorf("inspect cache: %w", err)
 	}
 
-	for _, stmt := range statements {
-		if _, err := db.Exec(stmt); err != nil {
-			if strings.Contains(err.Error(), "duplicate column") {
-				continue
-			}
+	fresh := tables == 0
 
-			return fmt.Errorf("migrate cache: %s: %w", stmt, err)
+	if _, err := db.Exec(schema); err != nil {
+		return fmt.Errorf("migrate cache: %w", err)
+	}
+
+	if fresh {
+		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations))); err != nil {
+			return fmt.Errorf("stamp cache version: %w", err)
+		}
+
+		return nil
+	}
+
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read cache version: %w", err)
+	}
+
+	for ; version < len(migrations); version++ {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+
+		if err := migrations[version](tx); err != nil {
+			tx.Rollback()
+
+			return fmt.Errorf("migrate cache to v%d: %w", version+1, err)
+		}
+
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, version+1)); err != nil {
+			tx.Rollback()
+
+			return fmt.Errorf("stamp cache version: %w", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return err
 		}
 	}
 
@@ -158,6 +219,13 @@ func (s *Store) PutBoxes(ctx context.Context, boxes []mail.Box) error {
 			b.ID, b.Name, strings.Join(b.Path, "/"), string(b.Kind), b.Color, b.Total, b.Unread); err != nil {
 			return fmt.Errorf("insert box %s: %w", b.ID, err)
 		}
+	}
+
+	// A label deleted server-side vanishes from the new list but its
+	// membership rows would linger, so clear anything now pointing at nothing.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM conversation_boxes WHERE box_id NOT IN (SELECT id FROM boxes)`); err != nil {
+		return fmt.Errorf("clear orphaned box membership: %w", err)
 	}
 
 	return tx.Commit()
@@ -290,17 +358,9 @@ func (s *Store) PutConversations(ctx context.Context, convs []mail.Conversation)
 	return tx.Commit()
 }
 
-// DeleteConversations removes conversations and, by cascade, their box rows.
+// DeleteConversations removes conversations, their box rows (by cascade) and
+// their messages.
 func (s *Store) DeleteConversations(ctx context.Context, ids []string) error {
-	return s.deleteByID(ctx, "conversations", ids)
-}
-
-// DeleteMessages removes messages and, by cascade, their cached bodies.
-func (s *Store) DeleteMessages(ctx context.Context, ids []string) error {
-	return s.deleteByID(ctx, "messages", ids)
-}
-
-func (s *Store) deleteByID(ctx context.Context, table string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -311,7 +371,57 @@ func (s *Store) deleteByID(ctx context.Context, table string, ids []string) erro
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.PrepareContext(ctx, `DELETE FROM `+table+` WHERE id = ?`)
+	if err := deleteConversationsTx(ctx, tx, ids); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// deleteConversationsTx does the actual work, shared with PruneConversations.
+//
+// Messages carry no foreign key to conversations — a message event can arrive
+// before its conversation is cached — so their delete is explicit here rather
+// than a cascade. Bodies do cascade off the message rows.
+func deleteConversationsTx(ctx context.Context, tx *sql.Tx, ids []string) error {
+	delMsgs, err := tx.PrepareContext(ctx, `DELETE FROM messages WHERE conversation_id = ?`)
+	if err != nil {
+		return err
+	}
+	defer delMsgs.Close()
+
+	delConv, err := tx.PrepareContext(ctx, `DELETE FROM conversations WHERE id = ?`)
+	if err != nil {
+		return err
+	}
+	defer delConv.Close()
+
+	for _, id := range ids {
+		if _, err := delMsgs.ExecContext(ctx, id); err != nil {
+			return fmt.Errorf("delete messages of %s: %w", id, err)
+		}
+
+		if _, err := delConv.ExecContext(ctx, id); err != nil {
+			return fmt.Errorf("delete conversation %s: %w", id, err)
+		}
+	}
+
+	return nil
+}
+
+// DeleteMessages removes messages and, by cascade, their cached bodies.
+func (s *Store) DeleteMessages(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `DELETE FROM messages WHERE id = ?`)
 	if err != nil {
 		return err
 	}
@@ -319,7 +429,174 @@ func (s *Store) deleteByID(ctx context.Context, table string, ids []string) erro
 
 	for _, id := range ids {
 		if _, err := stmt.ExecContext(ctx, id); err != nil {
-			return fmt.Errorf("delete from %s: %w", table, err)
+			return fmt.Errorf("delete message %s: %w", id, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// PruneConversations deletes cached conversations in one box that a backfill
+// no longer saw: whatever the sweep finds was deleted or moved server-side
+// while the cursor was too old to tell us.
+//
+// seen is the union of IDs the whole backfill pass fetched, across every box,
+// so a thread that moved between two backfilled boxes is never purged. since
+// bounds the sweep to the window the backfill actually covered — a pass that
+// stopped at its depth cap has said nothing about older threads, so only rows
+// strictly newer than the oldest one fetched are candidates. The zero time
+// means the box was paged to exhaustion and the whole box is fair game.
+// Boundary ties on since are left alone; the next pass gets them.
+func (s *Store) PruneConversations(ctx context.Context, boxID string, seen map[string]bool, since time.Time) (int, error) {
+	query := `SELECT c.id FROM conversations c
+	          JOIN conversation_boxes cb ON cb.conversation_id = c.id
+	          WHERE cb.box_id = ?`
+	args := []any{boxID}
+
+	if !since.IsZero() {
+		query += ` AND c.time > ?`
+		args = append(args, since.Unix())
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("list prune candidates in %s: %w", boxID, err)
+	}
+
+	var stale []string
+
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+
+			return 0, err
+		}
+
+		if !seen[id] {
+			stale = append(stale, id)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		rows.Close()
+
+		return 0, err
+	}
+
+	rows.Close()
+
+	if len(stale) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	if err := deleteConversationsTx(ctx, tx, stale); err != nil {
+		return 0, err
+	}
+
+	return len(stale), tx.Commit()
+}
+
+// ApplyMove records a move locally: the conversations gain one box and lose
+// another, so the list the user is looking at changes now rather than after
+// the next poll round-trips. Box counters are nudged to match; the next
+// provider refresh replaces them with authoritative numbers.
+//
+// IDs not in the cache are skipped: there is nothing to move locally.
+func (s *Store) ApplyMove(ctx context.Context, ids []string, addBoxID, removeBoxID string) error {
+	if len(ids) == 0 || (addBoxID == "" && removeBoxID == "") {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	add, err := tx.PrepareContext(ctx,
+		`INSERT OR IGNORE INTO conversation_boxes (conversation_id, box_id) VALUES (?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer add.Close()
+
+	remove, err := tx.PrepareContext(ctx,
+		`DELETE FROM conversation_boxes WHERE conversation_id = ? AND box_id = ?`)
+	if err != nil {
+		return err
+	}
+	defer remove.Close()
+
+	// Counter deltas per box: total moves with every row, unread only with
+	// the threads that have something unread.
+	var addTotal, addUnread, rmTotal, rmUnread int
+
+	for _, id := range ids {
+		var unread int
+
+		err := tx.QueryRowContext(ctx,
+			`SELECT num_unread FROM conversations WHERE id = ?`, id).Scan(&unread)
+		if err == sql.ErrNoRows {
+			continue
+		}
+
+		if err != nil {
+			return fmt.Errorf("apply move to %s: %w", id, err)
+		}
+
+		if addBoxID != "" {
+			res, err := add.ExecContext(ctx, id, addBoxID)
+			if err != nil {
+				return fmt.Errorf("apply move to %s: %w", id, err)
+			}
+
+			if n, _ := res.RowsAffected(); n > 0 {
+				addTotal++
+
+				if unread > 0 {
+					addUnread++
+				}
+			}
+		}
+
+		if removeBoxID != "" {
+			res, err := remove.ExecContext(ctx, id, removeBoxID)
+			if err != nil {
+				return fmt.Errorf("apply move to %s: %w", id, err)
+			}
+
+			if n, _ := res.RowsAffected(); n > 0 {
+				rmTotal++
+
+				if unread > 0 {
+					rmUnread++
+				}
+			}
+		}
+	}
+
+	for _, adj := range []struct {
+		boxID         string
+		total, unread int
+	}{
+		{addBoxID, addTotal, addUnread},
+		{removeBoxID, -rmTotal, -rmUnread},
+	} {
+		if adj.boxID == "" || (adj.total == 0 && adj.unread == 0) {
+			continue
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE boxes SET total = MAX(total + ?, 0), unread = MAX(unread + ?, 0) WHERE id = ?`,
+			adj.total, adj.unread, adj.boxID); err != nil {
+			return fmt.Errorf("adjust counts for box %s: %w", adj.boxID, err)
 		}
 	}
 
@@ -349,17 +626,25 @@ func (s *Store) Conversations(ctx context.Context, opts mail.ListOptions) ([]mai
 	}
 
 	if opts.Search != "" {
-		where = append(where, `c.subject LIKE ?`)
-		args = append(args, "%"+opts.Search+"%")
+		// % and _ are LIKE wildcards; a search for them should match them.
+		where = append(where, `c.subject LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+escapeLike(opts.Search)+"%")
 	}
 
 	if len(where) > 0 {
 		query += ` WHERE ` + strings.Join(where, ` AND `)
 	}
 
-	query += ` ORDER BY c.time DESC`
+	// sort_order and id break ties between threads sharing a timestamp, so
+	// paging never shows a row twice or skips one.
+	if opts.Desc {
+		query += ` ORDER BY c.time DESC, c.sort_order DESC, c.id DESC`
+	} else {
+		query += ` ORDER BY c.time ASC, c.sort_order ASC, c.id ASC`
+	}
 
-	if opts.Limit > 0 {
+	switch {
+	case opts.Limit > 0:
 		query += ` LIMIT ?`
 		args = append(args, opts.Limit)
 
@@ -367,6 +652,10 @@ func (s *Store) Conversations(ctx context.Context, opts mail.ListOptions) ([]mai
 			query += ` OFFSET ?`
 			args = append(args, opts.Offset)
 		}
+	case opts.Offset > 0:
+		// SQLite requires a LIMIT before OFFSET; -1 means unbounded.
+		query += ` LIMIT -1 OFFSET ?`
+		args = append(args, opts.Offset)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -390,17 +679,30 @@ func (s *Store) Conversations(ctx context.Context, opts mail.ListOptions) ([]mai
 		return nil, err
 	}
 
-	// Box membership is only loaded for the rows actually returned.
+	// Box membership is only loaded for the rows actually returned, and in
+	// one query rather than one per row.
+	ids := make([]string, len(out))
 	for i := range out {
-		ids, err := s.conversationBoxes(ctx, out[i].ID)
-		if err != nil {
-			return nil, err
-		}
+		ids[i] = out[i].ID
+	}
 
-		out[i].BoxIDs = ids
+	byConv, err := s.conversationBoxesBatch(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range out {
+		out[i].BoxIDs = byConv[out[i].ID]
 	}
 
 	return out, nil
+}
+
+// escapeLike neutralises LIKE wildcards in user input, paired with ESCAPE '\'.
+func escapeLike(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+	return r.Replace(s)
 }
 
 type scanner interface {
@@ -431,6 +733,58 @@ func scanConversation(row scanner) (mail.Conversation, error) {
 	c.Time = time.Unix(unix, 0)
 
 	return c, nil
+}
+
+// conversationBoxesBatch loads box membership for many conversations at once.
+// The IN list is chunked to stay under SQLite's bound-parameter limit.
+func (s *Store) conversationBoxesBatch(ctx context.Context, ids []string) (map[string][]string, error) {
+	const chunk = 500
+
+	out := make(map[string][]string, len(ids))
+
+	for len(ids) > 0 {
+		n := len(ids)
+		if n > chunk {
+			n = chunk
+		}
+
+		batch := ids[:n]
+		ids = ids[n:]
+
+		args := make([]any, n)
+		for i, id := range batch {
+			args[i] = id
+		}
+
+		query := `SELECT conversation_id, box_id FROM conversation_boxes WHERE conversation_id IN (?` +
+			strings.Repeat(`, ?`, n-1) + `)`
+
+		rows, err := s.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("list box membership: %w", err)
+		}
+
+		for rows.Next() {
+			var conv, box string
+			if err := rows.Scan(&conv, &box); err != nil {
+				rows.Close()
+
+				return nil, err
+			}
+
+			out[conv] = append(out[conv], box)
+		}
+
+		if err := rows.Err(); err != nil {
+			rows.Close()
+
+			return nil, err
+		}
+
+		rows.Close()
+	}
+
+	return out, nil
 }
 
 func (s *Store) conversationBoxes(ctx context.Context, id string) ([]string, error) {

@@ -7,6 +7,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -57,6 +58,7 @@ type Result struct {
 	Messages      int    `json:"messages"`
 	Newsletters   int    `json:"newsletters"`
 	Evicted       int    `json:"evicted_bodies"`
+	Purged        int    `json:"purged"`
 	Senders       int    `json:"senders"`
 	FullResync    bool   `json:"full_resync"`
 	Cursor        string `json:"cursor"`
@@ -126,14 +128,46 @@ func (s *Syncer) Backfill(ctx context.Context) (Result, error) {
 		targets = defaultBackfillBoxes(boxes)
 	}
 
+	// Mark: every conversation this pass touches goes into seen, shared
+	// across boxes so a thread that moved between two backfilled boxes is
+	// counted as alive wherever it now lives.
+	seen := make(map[string]bool)
+	windows := make(map[string]window, len(targets))
+
 	for _, boxID := range targets {
-		n, m, err := s.backfillBox(ctx, boxID)
+		n, w, err := s.backfillBox(ctx, boxID, seen)
 		if err != nil {
 			return res, fmt.Errorf("backfill box %s: %w", boxID, err)
 		}
 
 		res.Conversations += n
-		res.Messages += m
+		windows[boxID] = w
+	}
+
+	// Sweep: anything cached in a backfilled box that this pass did not see
+	// was deleted or moved server-side while the cursor could not tell us.
+	// The sweep stays inside what the backfill actually covered — a box paged
+	// only to BackfillDepth says nothing about older threads, so those keep
+	// their cache entries rather than being wrongly purged.
+	for _, boxID := range targets {
+		w := windows[boxID]
+
+		since := w.oldest
+		if w.exhausted {
+			// The whole box was paged, so the whole box is covered.
+			since = time.Time{}
+		}
+
+		n, err := s.store.PruneConversations(ctx, boxID, seen, since)
+		if err != nil {
+			return res, fmt.Errorf("prune box %s: %w", boxID, err)
+		}
+
+		res.Purged += n
+	}
+
+	if res.Purged > 0 {
+		s.progress("purged %d stale conversations", res.Purged)
 	}
 
 	// Newsletters are cheap and the screener leans on them heavily.
@@ -155,13 +189,26 @@ func (s *Syncer) Backfill(ctx context.Context) (Result, error) {
 	return res, nil
 }
 
+// window is what one box's backfill covered: everything newer than oldest,
+// or the entire box when the paging ran out before hitting BackfillDepth.
+// The purge sweep must not reach past it.
+type window struct {
+	oldest    time.Time
+	exhausted bool
+}
+
 // backfillBox pages through one box, caching conversation headers. Message
 // headers come along for the threads that get opened, not up front: fetching
 // every message of every thread is what makes a mirror rather than a cache.
-func (s *Syncer) backfillBox(ctx context.Context, boxID string) (int, int, error) {
+//
+// Every ID fetched is added to seen, for the purge sweep afterwards.
+func (s *Syncer) backfillBox(ctx context.Context, boxID string, seen map[string]bool) (int, window, error) {
 	const page = 150
 
-	var convs int
+	var (
+		convs int
+		w     window
+	)
 
 	for offset := 0; offset < s.BackfillDepth; offset += page {
 		limit := page
@@ -176,26 +223,38 @@ func (s *Syncer) backfillBox(ctx context.Context, boxID string) (int, int, error
 			Desc:   true,
 		})
 		if err != nil {
-			return convs, 0, err
+			return convs, w, err
 		}
 
 		if len(batch) == 0 {
+			w.exhausted = true
+
 			break
 		}
 
 		if err := s.store.PutConversations(ctx, batch); err != nil {
-			return convs, 0, err
+			return convs, w, err
+		}
+
+		for _, c := range batch {
+			seen[c.ID] = true
+
+			if w.oldest.IsZero() || c.Time.Before(w.oldest) {
+				w.oldest = c.Time
+			}
 		}
 
 		convs += len(batch)
 		s.progress("cached %d conversations in box %s", convs, boxID)
 
 		if len(batch) < limit {
+			w.exhausted = true
+
 			break
 		}
 	}
 
-	return convs, 0, nil
+	return convs, w, nil
 }
 
 // Incremental applies event deltas from the cursor forward.
@@ -215,53 +274,29 @@ func (s *Syncer) Incremental(ctx context.Context, cursor string) (Result, error)
 		return res, nil
 	}
 
-	var (
-		upConvs  []mail.Conversation
-		delConvs []string
-		upMsgs   []mail.Message
-		delMsgs  []string
-	)
-
+	// Changes are applied one by one in stream order. Batching by kind would
+	// flatten the order and net a delete-then-recreate of the same ID out to
+	// the wrong end state.
 	for _, c := range delta.Conversations {
-		if c.Kind == mail.ChangeDelete {
-			delConvs = append(delConvs, c.ID)
-			continue
+		if err := s.applyConversationChange(ctx, c); err != nil {
+			return res, err
 		}
 
-		upConvs = append(upConvs, c.Conversation)
+		res.Conversations++
 	}
 
 	for _, m := range delta.Messages {
-		if m.Kind == mail.ChangeDelete {
-			delMsgs = append(delMsgs, m.ID)
-			continue
+		if err := s.applyMessageChange(ctx, m); err != nil {
+			return res, err
 		}
 
-		upMsgs = append(upMsgs, m.Message)
+		res.Messages++
 	}
 
-	if err := s.store.PutConversations(ctx, upConvs); err != nil {
-		return res, err
-	}
-
-	if err := s.store.DeleteConversations(ctx, delConvs); err != nil {
-		return res, err
-	}
-
-	if err := s.store.PutMessages(ctx, upMsgs); err != nil {
-		return res, err
-	}
-
-	if err := s.store.DeleteMessages(ctx, delMsgs); err != nil {
-		return res, err
-	}
-
-	res.Conversations = len(upConvs) + len(delConvs)
-	res.Messages = len(upMsgs) + len(delMsgs)
-
-	// Box counts move with almost every delta, so refresh them whenever
-	// anything at all changed.
-	if len(delta.Boxes) > 0 || res.Conversations > 0 {
+	// Box counts move with almost every delta — a message marked read changes
+	// its box's unread count without a conversation event — so refresh them
+	// whenever anything at all changed.
+	if len(delta.Boxes) > 0 || res.Conversations > 0 || res.Messages > 0 {
 		boxes, err := s.provider.Boxes(ctx)
 		if err != nil {
 			return res, err
@@ -274,15 +309,130 @@ func (s *Syncer) Incremental(ctx context.Context, cursor string) (Result, error)
 		res.Boxes = len(boxes)
 	}
 
-	if n, err := s.store.EvictBodies(ctx, s.BodyCacheSize); err == nil {
-		res.Evicted = n
+	n, err := s.store.EvictBodies(ctx, s.BodyCacheSize)
+	if err != nil {
+		return res, fmt.Errorf("evict bodies: %w", err)
 	}
+
+	res.Evicted = n
 
 	if err := s.store.SetCursor(ctx, delta.Cursor); err != nil {
 		return res, err
 	}
 
 	return res, nil
+}
+
+// applyConversationChange applies one conversation event.
+func (s *Syncer) applyConversationChange(ctx context.Context, c mail.ConversationChange) error {
+	if c.Kind == mail.ChangeDelete {
+		return s.store.DeleteConversations(ctx, []string{c.ID})
+	}
+
+	conv := c.Conversation
+
+	// Proton does not promise that an update event carries the full
+	// conversation, so a zero field on an update is treated as "unchanged"
+	// rather than allowed to blank a real cached value.
+	if c.Kind == mail.ChangeUpdate {
+		cached, err := s.store.Conversation(ctx, c.ID)
+
+		switch {
+		case err == nil:
+			conv = mergeConversation(cached, conv)
+		case !errors.Is(err, mail.ErrNotFound):
+			return err
+		}
+	}
+
+	return s.store.PutConversations(ctx, []mail.Conversation{conv})
+}
+
+// applyMessageChange applies one message event, with the same partial-update
+// guard as conversations.
+func (s *Syncer) applyMessageChange(ctx context.Context, m mail.MessageChange) error {
+	if m.Kind == mail.ChangeDelete {
+		return s.store.DeleteMessages(ctx, []string{m.ID})
+	}
+
+	msg := m.Message
+
+	if m.Kind == mail.ChangeUpdate {
+		cached, err := s.store.Message(ctx, m.ID)
+
+		switch {
+		case err == nil:
+			msg = mergeMessage(cached, msg)
+		case !errors.Is(err, mail.ErrNotFound):
+			return err
+		}
+	}
+
+	return s.store.PutMessages(ctx, []mail.Message{msg})
+}
+
+// mergeConversation keeps cached values wherever the update left a zero. Only
+// fields a real conversation cannot legitimately zero are guarded: NumUnread
+// going to 0 is a thread being read, so it is written as-is.
+func mergeConversation(cached, upd mail.Conversation) mail.Conversation {
+	if upd.Time.Unix() <= 0 {
+		upd.Time = cached.Time
+	}
+
+	if upd.Subject == "" {
+		upd.Subject = cached.Subject
+	}
+
+	if len(upd.Senders) == 0 {
+		upd.Senders = cached.Senders
+	}
+
+	if len(upd.Recipients) == 0 {
+		upd.Recipients = cached.Recipients
+	}
+
+	if len(upd.BoxIDs) == 0 {
+		upd.BoxIDs = cached.BoxIDs
+	}
+
+	if upd.NumMessages == 0 {
+		upd.NumMessages = cached.NumMessages
+	}
+
+	if upd.Order == 0 {
+		upd.Order = cached.Order
+	}
+
+	return upd
+}
+
+// mergeMessage is mergeConversation's counterpart for message events.
+func mergeMessage(cached, upd mail.Message) mail.Message {
+	if upd.Time.Unix() <= 0 {
+		upd.Time = cached.Time
+	}
+
+	if upd.Subject == "" {
+		upd.Subject = cached.Subject
+	}
+
+	if upd.From.Address == "" {
+		upd.From = cached.From
+	}
+
+	if upd.ConversationID == "" {
+		upd.ConversationID = cached.ConversationID
+	}
+
+	if len(upd.BoxIDs) == 0 {
+		upd.BoxIDs = cached.BoxIDs
+	}
+
+	if upd.Order == 0 {
+		upd.Order = cached.Order
+	}
+
+	return upd
 }
 
 // Run polls until the context is cancelled. Errors are reported through
@@ -324,7 +474,20 @@ func (s *Syncer) Thread(ctx context.Context, conversationID string) (mail.Thread
 		return mail.Thread{}, err
 	}
 
-	if err := s.store.PutConversations(ctx, []mail.Conversation{t.Conversation}); err != nil {
+	// A thread fetch races the incremental loop: by the time this snapshot
+	// lands, a poll may already have applied newer events. A cached header
+	// that outranks the snapshot wins and the write is skipped; the messages
+	// are still cached, since they only ever accumulate.
+	cached, err := s.store.Conversation(ctx, conversationID)
+
+	switch {
+	case err == nil && snapshotIsStale(cached, t.Conversation):
+		// keep the cached header
+	case err == nil || errors.Is(err, mail.ErrNotFound):
+		if err := s.store.PutConversations(ctx, []mail.Conversation{t.Conversation}); err != nil {
+			return t, err
+		}
+	default:
 		return t, err
 	}
 
@@ -335,6 +498,25 @@ func (s *Syncer) Thread(ctx context.Context, conversationID string) (mail.Thread
 	return t, nil
 }
 
+// snapshotIsStale reports whether the cache already holds something newer
+// than the fetched snapshot. Order is the provider's sort key and moves with
+// every change, so it is the sharper comparison; Time is the fallback when
+// either side lacks one.
+func snapshotIsStale(cached, snap mail.Conversation) bool {
+	if cached.Order > 0 && snap.Order > 0 {
+		return snap.Order < cached.Order
+	}
+
+	return snap.Time.Before(cached.Time)
+}
+
+// ApplyLocalMove reflects a move in the cache immediately, so the list the
+// user is looking at updates before the next poll confirms it. The caller
+// still writes the move to the provider; this is only the optimistic half.
+func (s *Syncer) ApplyLocalMove(ctx context.Context, ids []string, addBoxID, removeBoxID string) error {
+	return s.store.ApplyMove(ctx, ids, addBoxID, removeBoxID)
+}
+
 // Body returns a decrypted body, from the cache when possible.
 func (s *Syncer) Body(ctx context.Context, messageID string) (mail.Body, error) {
 	b, err := s.store.Body(ctx, messageID)
@@ -342,7 +524,7 @@ func (s *Syncer) Body(ctx context.Context, messageID string) (mail.Body, error) 
 		return b, nil
 	}
 
-	if err != mail.ErrNotFound {
+	if !errors.Is(err, mail.ErrNotFound) {
 		return mail.Body{}, err
 	}
 
@@ -385,5 +567,5 @@ func defaultBackfillBoxes(boxes []mail.Box) []string {
 }
 
 func isNotSupported(err error) bool {
-	return err == mail.ErrNotSupported
+	return errors.Is(err, mail.ErrNotSupported)
 }

@@ -42,8 +42,7 @@ type Provider struct {
 	// Routed records RouteNewsletter calls.
 	Routed []string
 
-	cursor    string
-	pollIndex int
+	cursor string
 }
 
 // New returns an empty provider.
@@ -65,7 +64,12 @@ func (p *Provider) Name() string { return "fake" }
 func (p *Provider) Close() error { return nil }
 
 func (p *Provider) Addresses(context.Context) ([]mail.Address, error) {
-	return p.Own, nil
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.record("Addresses")
+
+	return append([]mail.Address(nil), p.Own...), nil
 }
 
 func (p *Provider) Boxes(context.Context) ([]mail.Box, error) {
@@ -101,7 +105,23 @@ func (p *Provider) Conversations(_ context.Context, opts mail.ListOptions) ([]ma
 		out = append(out, c)
 	}
 
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Time.After(out[j].Time) })
+	// Same order contract as the store: Desc is newest first, unset is oldest
+	// first, ID breaks timestamp ties.
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].Time.Equal(out[j].Time) {
+			if opts.Desc {
+				return out[i].Time.After(out[j].Time)
+			}
+
+			return out[i].Time.Before(out[j].Time)
+		}
+
+		if opts.Desc {
+			return out[i].ID > out[j].ID
+		}
+
+		return out[i].ID < out[j].ID
+	})
 
 	if opts.Offset > 0 {
 		if opts.Offset >= len(out) {
@@ -151,23 +171,52 @@ func (p *Provider) Attachment(context.Context, string, string) ([]byte, error) {
 	return nil, mail.ErrNotFound
 }
 
+// Label records the call and mutates box membership, so a move flow can be
+// tested end to end: label, unlabel, then resync and observe the new state.
 func (p *Provider) Label(_ context.Context, ids []string, boxID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	p.record("Label")
+
 	for _, id := range ids {
 		p.Labelled = append(p.Labelled, id+":"+boxID)
+
+		for i := range p.Convs {
+			if p.Convs[i].ID == id && !contains(p.Convs[i].BoxIDs, boxID) {
+				p.Convs[i].BoxIDs = append(p.Convs[i].BoxIDs, boxID)
+			}
+		}
 	}
 
 	return nil
 }
 
+// Unlabel is Label's inverse, and mutates membership the same way.
 func (p *Provider) Unlabel(_ context.Context, ids []string, boxID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	p.record("Unlabel")
+
 	for _, id := range ids {
 		p.Unlabelled = append(p.Unlabelled, id+":"+boxID)
+
+		for i := range p.Convs {
+			if p.Convs[i].ID != id {
+				continue
+			}
+
+			var kept []string
+
+			for _, b := range p.Convs[i].BoxIDs {
+				if b != boxID {
+					kept = append(kept, b)
+				}
+			}
+
+			p.Convs[i].BoxIDs = kept
+		}
 	}
 
 	return nil
@@ -195,6 +244,11 @@ func (p *Provider) MarkRead(context.Context, []string) error { return nil }
 func (p *Provider) MarkUnread(context.Context, []string, string) error { return nil }
 
 func (p *Provider) Draft(_ context.Context, d mail.Draft) (mail.Draft, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.record("Draft")
+
 	if d.ID == "" {
 		d.ID = "draft-1"
 	}
@@ -203,12 +257,29 @@ func (p *Provider) Draft(_ context.Context, d mail.Draft) (mail.Draft, error) {
 }
 
 func (p *Provider) Send(_ context.Context, draftID string) (mail.Message, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.record("Send")
+
 	return mail.Message{ID: draftID}, nil
 }
 
-func (p *Provider) Drafts(context.Context) ([]mail.Message, error) { return nil, nil }
+func (p *Provider) Drafts(context.Context) ([]mail.Message, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.record("Drafts")
+
+	return nil, nil
+}
 
 func (p *Provider) Newsletters(context.Context) ([]mail.Newsletter, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.record("Newsletters")
+
 	if !p.SupportsNewsletters {
 		return nil, mail.ErrNotSupported
 	}
@@ -231,21 +302,29 @@ func (p *Provider) RouteNewsletter(_ context.Context, id, boxID string, markAsRe
 
 func (p *Provider) Cursor(context.Context) (string, error) { return p.cursor, nil }
 
-// Poll returns the queued deltas one at a time, then an empty one.
+// Poll returns the first queued delta after the given cursor, or an empty
+// delta once the caller has caught up. Position comes from the cursor rather
+// than a call counter, so a caller that re-polls an old cursor gets the same
+// delta again — the semantics a real event stream has.
 func (p *Provider) Poll(_ context.Context, cursor string) (mail.Delta, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.record("Poll")
 
-	if p.pollIndex >= len(p.Deltas) {
+	next := 0
+
+	for i, d := range p.Deltas {
+		if d.Cursor == cursor {
+			next = i + 1
+		}
+	}
+
+	if next >= len(p.Deltas) {
 		return mail.Delta{Cursor: cursor}, nil
 	}
 
-	d := p.Deltas[p.pollIndex]
-	p.pollIndex++
-
-	return d, nil
+	return p.Deltas[next], nil
 }
 
 func contains(hay []string, needle string) bool {

@@ -218,7 +218,9 @@ func (p *Provider) Conversations(ctx context.Context, opts fmail.ListOptions) ([
 		page = opts.Offset / pageSize
 	}
 
-	convs, err := p.api.Conversations(ctx, page, pageSize, filter)
+	// The total is dropped here because the Provider interface has no way to
+	// carry it; callers page until a short page instead.
+	convs, _, err := p.api.Conversations(ctx, page, pageSize, filter)
 	if err != nil {
 		return nil, fmt.Errorf("get conversations: %w", err)
 	}
@@ -465,6 +467,9 @@ func (p *Provider) Drafts(ctx context.Context) ([]fmail.Message, error) {
 }
 
 func (p *Provider) Newsletters(ctx context.Context) ([]fmail.Newsletter, error) {
+	// A protonapi.ErrTruncated walk fails loudly on purpose: a newsletter
+	// listing that silently misses entries would make "screen this sender"
+	// decisions on incomplete data.
 	subs, err := p.api.NewsletterSubscriptions(ctx, protonapi.NewsletterFilter{})
 	if err != nil {
 		return nil, fmt.Errorf("get newsletter subscriptions: %w", err)
@@ -520,7 +525,12 @@ func (p *Provider) Poll(ctx context.Context, cursor string) (fmail.Delta, error)
 
 	events, err := p.api.Events(ctx, cursor)
 	if err != nil {
-		return fmail.Delta{}, fmt.Errorf("get event: %w", err)
+		// A truncated drain is not a failure: the events collected are
+		// valid and the cursor below ends on the last of them, so the next
+		// poll simply picks up where this one stopped.
+		if !errors.Is(err, protonapi.ErrTruncated) {
+			return fmail.Delta{}, fmt.Errorf("get event: %w", err)
+		}
 	}
 
 	out := fmail.Delta{Cursor: cursor}

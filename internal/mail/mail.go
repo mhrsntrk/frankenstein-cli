@@ -13,6 +13,8 @@ import (
 )
 
 // Errors a Provider may return that callers are expected to distinguish.
+// Implementations may wrap them with context, so compare with errors.Is
+// rather than ==.
 var (
 	ErrNotFound               = errors.New("not found")
 	ErrNotSupported           = errors.New("not supported by this provider")
@@ -75,8 +77,9 @@ func (a Address) Display() string {
 	return a.Address
 }
 
-// Conversation is a thread. Counts are scoped to the box it was listed under
-// when the provider supports that, which is what a list view wants.
+// Conversation is a thread. Counts and Time cover the whole thread, never one
+// box's slice of it: a conversation is cached as a single row, so box-scoped
+// numbers from one listing would leak into every other box it appears in.
 type Conversation struct {
 	ID      string `json:"id"`
 	Subject string `json:"subject"`
@@ -211,7 +214,8 @@ type ListOptions struct {
 	// UnreadOnly restricts to threads with unread messages.
 	UnreadOnly bool
 
-	// Desc lists newest first. This is the default.
+	// Desc lists newest first; unset lists oldest first. Anything showing
+	// mail to a person sets it.
 	Desc bool
 }
 

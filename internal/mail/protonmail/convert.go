@@ -105,26 +105,21 @@ func categoryBoxes() []fmail.Box {
 }
 
 func toConversation(c protonapi.Conversation) fmail.Conversation {
-	// Prefer the label-scoped rollups: they describe the thread as it appears
-	// in the box being listed, which is what the caller asked for.
-	num, unread, atts := c.NumMessages, c.NumUnread, c.NumAttachments
-	size, when := c.Size, c.Time
-
-	if c.ContextNumMessages > 0 {
-		num, unread, atts = c.ContextNumMessages, c.ContextNumUnread, c.ContextNumAttachments
-		size, when = c.ContextSize, c.ContextTime
-	}
-
+	// Always the global rollups, never the Context* ones scoped to the label
+	// a listing was made under. Everything this conversion feeds ends up in
+	// the cache, which holds one row per thread: a box-scoped count written
+	// there would show up in every other box the thread appears in, drifting
+	// unread counts and times on any replied thread.
 	return fmail.Conversation{
 		ID:             c.ID,
 		Subject:        c.Subject,
 		Senders:        toAPIAddresses(c.Senders),
 		Recipients:     toAPIAddresses(c.Recipients),
-		NumMessages:    num,
-		NumUnread:      unread,
-		NumAttachments: atts,
-		Time:           time.Unix(when, 0),
-		Size:           size,
+		NumMessages:    c.NumMessages,
+		NumUnread:      c.NumUnread,
+		NumAttachments: c.NumAttachments,
+		Time:           time.Unix(c.Time, 0),
+		Size:           c.Size,
 		BoxIDs:         c.LabelIDs,
 		CategoryID:     c.CategoryID,
 		Order:          c.Order,
