@@ -20,7 +20,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 
 		if m.compose != nil {
-			m.compose.body.SetWidth(maxInt(20, m.width-4))
+			m.compose.body.SetWidth(maxInt(20, m.contentWidth()-4))
 			m.compose.body.SetHeight(maxInt(3, m.height-14))
 		}
 
@@ -575,7 +575,7 @@ func (m *Model) startCompose(kind composeKind) (tea.Model, tea.Cmd) {
 	subject.CharLimit = 300
 
 	body := textarea.New()
-	body.SetWidth(maxInt(20, m.width-4))
+	body.SetWidth(maxInt(20, m.contentWidth()-4))
 	body.SetHeight(maxInt(3, m.height-14))
 	body.ShowLineNumbers = false
 

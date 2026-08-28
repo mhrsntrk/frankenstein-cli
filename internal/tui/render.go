@@ -13,7 +13,7 @@ import (
 // Done once on load and on resize rather than per frame, because the render
 // path has to stay cheap: View() runs on every keystroke.
 func (m *Model) rewrapBody() {
-	width := maxInt(20, m.width-2)
+	width := maxInt(20, m.contentWidth()-2)
 
 	var lines []string
 

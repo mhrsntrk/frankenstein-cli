@@ -692,7 +692,7 @@ func TestViewNeverOverflowsTheTerminal(t *testing.T) {
 	h.m.list.SetPostings(toPostings(many))
 	h.m.pending = 7
 
-	sizes := [][2]int{{80, 24}, {100, 30}, {200, 50}, {120, 14}, {60, 10}}
+	sizes := [][2]int{{80, 24}, {100, 30}, {200, 50}, {300, 80}, {120, 14}, {60, 10}}
 
 	views := map[string]view{
 		"boxes":    viewBoxes,

@@ -18,7 +18,7 @@ func TestDumpHeyRows(t *testing.T) {
 	h := newHarness(t)
 	now := time.Now()
 
-	h.m.width, h.m.height = 150, 28
+	h.m.width, h.m.height = 200, 26
 	h.m.convs = []mail.Conversation{
 		{ID: "a", Subject: "Re: contract review, one more clause", Time: now.Add(-2 * time.Hour),
 			NumMessages: 1, NumUnread: 1, Snippet: "Sorry to keep going on about this, but clause 4 still reads as though",

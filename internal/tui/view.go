@@ -379,7 +379,7 @@ func (m *Model) boxesView() string {
 		}
 
 		if i == m.boxIdx {
-			line = selectedStyle.Render(padTo(line, m.width))
+			line = selectedStyle.Render(padTo(line, m.contentWidth()))
 		}
 
 		b.WriteString(line)
@@ -420,19 +420,29 @@ func (m *Model) tracksUnread() bool {
 	}
 }
 
-// readableWidth caps how wide a row gets.
+// Side margins, so the content does not run into the edge of the window.
 //
-// Upstream has no cap, because a terminal that wide is unusual. On a very wide
-// one an excerpt running the full span is unreadable: the eye loses the line
-// before it reaches the date. This keeps a measured column and centres it.
-const readableWidth = 118
+// There is no width cap: a wide terminal should give wide rows, and capping one
+// wastes most of the screen. The margin scales gently with the window so a
+// narrow terminal keeps nearly all of its columns and a wide one gets a little
+// breathing room on each side.
+const (
+	minMargin = 1
+	maxMargin = 6
+)
 
-// contentWidth is the width available to a row.
-func (m *Model) contentWidth() int {
-	return minInt(readableWidth, maxInt(20, m.width))
+// margin is the space left on each side of the content.
+func (m *Model) margin() int {
+	return clamp(m.width/40, minMargin, maxMargin)
 }
 
-// gutter is the left margin that centres the capped content.
+// contentWidth is the width available to a row: everything the terminal has,
+// less a margin on each side.
+func (m *Model) contentWidth() int {
+	return maxInt(20, m.width-2*m.margin())
+}
+
+// gutter is the left margin that centres the content.
 func (m *Model) gutter() string {
 	pad := (m.width - m.contentWidth()) / 2
 	if pad < 1 {
@@ -479,14 +489,14 @@ func (m *Model) threadView() string {
 		line := fmt.Sprintf("%s %-16s  %-26s  %s",
 			marker, msg.Time.Format("2 Jan 15:04"),
 			truncateStr(msg.From.Display(), 26),
-			truncateStr(msg.Subject, maxInt(10, m.width-50)))
+			truncateStr(msg.Subject, maxInt(10, m.contentWidth()-50)))
 
 		if msg.Unread {
 			line = unreadStyle.Render(line)
 		}
 
 		if i == m.msgIdx {
-			line = selectedStyle.Render(padTo(line, m.width))
+			line = selectedStyle.Render(padTo(line, m.contentWidth()))
 		}
 
 		b.WriteString(line)
@@ -553,7 +563,7 @@ func (m *Model) screenerView() string {
 			truncateStr(name, 46), s.MessageCount, relTime(s.LastSeen), tag)
 
 		if i == m.senderIdx {
-			line = selectedStyle.Render(padTo(line, m.width))
+			line = selectedStyle.Render(padTo(line, m.contentWidth()))
 		}
 
 		b.WriteString(line)
@@ -621,7 +631,7 @@ func (m *Model) movePickerView() string {
 			truncateStr(matches[i].Name, 30), dimStyle.Render(string(matches[i].Kind)))
 
 		if i == m.moveIdx {
-			line = selectedStyle.Render(padTo(line, m.width))
+			line = selectedStyle.Render(padTo(line, m.contentWidth()))
 		}
 
 		b.WriteString(line)
@@ -667,10 +677,10 @@ func (m *Model) calendarView() string {
 			when = "all day"
 		}
 
-		line := fmt.Sprintf("  %-13s %s", when, truncateStr(e.Title, maxInt(10, m.width-20)))
+		line := fmt.Sprintf("  %-13s %s", when, truncateStr(e.Title, maxInt(10, m.contentWidth()-20)))
 
 		if i == m.extraIdx {
-			line = selectedStyle.Render(padTo(line, m.width))
+			line = selectedStyle.Render(padTo(line, m.contentWidth()))
 		}
 
 		b.WriteString(line)
@@ -694,10 +704,10 @@ func (m *Model) journalView() string {
 	for i := 0; i < end; i++ {
 		e := m.journal[i]
 
-		line := fmt.Sprintf("  %-12s %s", e.Day, truncateStr(e.Title, maxInt(10, m.width-18)))
+		line := fmt.Sprintf("  %-12s %s", e.Day, truncateStr(e.Title, maxInt(10, m.contentWidth()-18)))
 
 		if i == m.extraIdx {
-			line = selectedStyle.Render(padTo(line, m.width))
+			line = selectedStyle.Render(padTo(line, m.contentWidth()))
 		}
 
 		b.WriteString(line)
