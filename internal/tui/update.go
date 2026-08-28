@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	"github.com/mhrsntrk/frankenstein-cli/internal/config"
 	fmail "github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
@@ -87,6 +88,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, nil
 
+	case bandsMsg:
+		m.calHabits, m.calTodos = msg.habits, msg.todos
+
+		return m, nil
+
 	case snippetsMsg:
 		// Fold the fetched previews into the rows already on screen, keeping
 		// the cursor and the selection where they were.
@@ -128,6 +134,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.loadSenders())
 		}
 
+		if msg.reloadBands {
+			cmds = append(cmds, m.loadBands())
+		}
+
+		if msg.reloadCalendar {
+			m.eventForm = nil
+
+			if m.view == viewEventForm {
+				m.pop()
+			}
+
+			cmds = append(cmds, m.loadEvents(), m.loadBands())
+		}
+
 		// A compose that succeeded should close itself.
 		if m.view == viewCompose && (msg.note == "sent" || msg.note == "draft saved") {
 			m.compose = nil
@@ -157,6 +177,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// trigger every single-letter action.
 	if m.compose != nil && m.view == viewCompose {
 		return m.handleComposeKey(msg)
+	}
+
+	if m.eventForm != nil && m.view == viewEventForm {
+		return m.handleEventFormKey(msg)
+	}
+
+	if m.band != nil && (m.view == viewHabits || m.view == viewTodos) {
+		return m.handleBandKey(msg)
 	}
 
 	if m.view == viewMovePicker {
@@ -402,6 +430,11 @@ func (m *Model) calendarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 
 		return m, m.loadEvents(), true
 
+	case "3":
+		m.calView, m.calOffset = calendarYear, 0
+
+		return m, m.loadEvents(), true
+
 	case "n":
 		m.calOffset++
 
@@ -416,9 +449,65 @@ func (m *Model) calendarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
 		m.calOffset = 0
 
 		return m, m.loadEvents(), true
+
+	case "c":
+		m.eventForm = newEventForm(nil, m.calAnchor())
+		m.push(viewEventForm)
+
+		return m, textinput.Blink, true
+
+	case "enter":
+		e, ok := m.selectedEvent()
+		if !ok {
+			return m, nil, true
+		}
+
+		m.eventForm = newEventForm(&e, m.calAnchor())
+		m.push(viewEventForm)
+
+		return m, textinput.Blink, true
+
+	case "D":
+		e, ok := m.selectedEvent()
+		if !ok {
+			return m, nil, true
+		}
+
+		m.loading = true
+
+		return m, m.deleteEvent(e.ID, e.Title), true
+
+	case "b":
+		model, cmd := m.openHabits()
+
+		return model, cmd, true
+
+	case "s":
+		model, cmd := m.openTodos()
+
+		return model, cmd, true
+
+	case "j", "down":
+		m.extraIdx = clamp(m.extraIdx+1, 0, maxInt(0, len(m.events)-1))
+
+		return m, nil, true
+
+	case "k", "up":
+		m.extraIdx = clamp(m.extraIdx-1, 0, maxInt(0, len(m.events)-1))
+
+		return m, nil, true
 	}
 
 	return m, nil, false
+}
+
+// selectedEvent is the event under the cursor in the calendar.
+func (m *Model) selectedEvent() (fcal.Event, bool) {
+	if m.extraIdx < 0 || m.extraIdx >= len(m.events) {
+		return fcal.Event{}, false
+	}
+
+	return m.events[m.extraIdx], true
 }
 
 // enterSection switches between Mail, Calendar and Journal.
@@ -429,7 +518,7 @@ func (m *Model) enterSection() tea.Cmd {
 	case sectionCalendar:
 		m.view = viewCalendar
 
-		return m.loadEvents()
+		return tea.Batch(m.loadEvents(), m.loadBands())
 	case sectionJournal:
 		m.view = viewJournal
 
@@ -829,8 +918,10 @@ func (m *Model) goBack() (tea.Model, tea.Cmd) {
 		m.view = viewBoxes
 		m.filter.SetValue("")
 		m.list.ClearSelection()
-	case viewScreener, viewCompose, viewMovePicker:
+	case viewScreener, viewCompose, viewMovePicker, viewEventForm, viewHabits, viewTodos:
 		m.compose = nil
+		m.eventForm = nil
+		m.band = nil
 		m.pop()
 	}
 

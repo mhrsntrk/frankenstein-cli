@@ -89,7 +89,7 @@ func newHarness(t *testing.T) *harness {
 	sc := screener.New(st, p, cfg.Screener)
 	ps := personal.New(st.DB(), filepath.Join(dir, "journal"))
 
-	m := New(st, fsync.New(p, st), p, sc, ps, nil, cfg)
+	m := New(st, fsync.New(p, st), p, sc, ps, nil, Todos{}, cfg)
 	m.width, m.height = 100, 30
 	m.boxes = p.Boxen
 	m.quickBoxes = pickQuickBoxes(p.Boxen, cfg.Screener)

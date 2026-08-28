@@ -13,6 +13,7 @@ import (
 	"github.com/mhrsntrk/frankenstein-cli/internal/personal"
 	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
 	fsync "github.com/mhrsntrk/frankenstein-cli/internal/sync"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
 )
 
 // --- messages ---------------------------------------------------------------
@@ -38,9 +39,11 @@ type chromeMsg struct {
 // actionMsg reports a write that finished, so the list can refresh and the
 // user gets told what happened.
 type actionMsg struct {
-	note     string
-	reload   bool
-	rescreen bool
+	note           string
+	reload         bool
+	rescreen       bool
+	reloadCalendar bool
+	reloadBands    bool
 }
 
 type errMsg struct{ err error }
@@ -180,6 +183,58 @@ func (m *Model) loadEvents() tea.Cmd {
 
 		return eventsMsg{events: events}
 	})
+}
+
+// bandsMsg carries the habits and todos drawn around the calendar grid.
+type bandsMsg struct {
+	habits []heyui.Habit
+	todos  []heyui.Todo
+}
+
+// loadBands fills the habits band and the todo ribbon.
+//
+// Habits are local, so they are cheap. Todos are a Google call, which is why
+// this is its own command rather than part of loading events.
+func (m *Model) loadBands() tea.Cmd {
+	return bg(30*time.Second, func(ctx context.Context) tea.Msg {
+		out := bandsMsg{}
+
+		if m.personal != nil {
+			if habits, err := m.personal.Habits(ctx, false); err == nil {
+				for _, h := range habits {
+					out.habits = append(out.habits, heyui.Habit{
+						ID:    h.ID,
+						Name:  h.Name,
+						Done:  h.DoneDays,
+						Color: habitColour(h.ID),
+					})
+				}
+			}
+		}
+
+		if m.todos != nil {
+			if items, err := m.todos(ctx); err == nil {
+				for i, t := range items {
+					out.todos = append(out.todos, heyui.Todo{
+						ID: int64(i + 1), Title: t.Title, Done: t.Done,
+					})
+				}
+			}
+		}
+
+		return out
+	})
+}
+
+// habitColour spreads habits across hey-cli's palette deterministically, so a
+// habit keeps its colour between runs.
+func habitColour(id int64) string {
+	names := heyui.HabitColours()
+	if len(names) == 0 {
+		return ""
+	}
+
+	return names[int(id)%len(names)]
 }
 
 func (m *Model) syncOnce() tea.Cmd {

@@ -121,7 +121,10 @@ Everything happens here. Press `?` for the full list.
 | `e` `u` `s` | mark read, unread, star |
 | `a` `t` `!` `v` | archive, trash, spam, move |
 | `/` | filter |
-| `1` `2` `p` `n` `t` | in Calendar: day, week, back, forward, today |
+| `1` `2` `3` | in Calendar: day, week, year |
+| `p` `n` `t` | back, forward, today |
+| `c` `enter` `D` | new event, edit, delete |
+| `b` `s` | habits, todos |
 | click | move the cursor, click again to open |
 | wheel | scroll without moving the cursor |
 

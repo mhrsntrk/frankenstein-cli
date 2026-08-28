@@ -75,6 +75,10 @@ func (m *Model) View() string {
 		b.WriteString(m.journalView())
 	case viewMovePicker:
 		b.WriteString(m.movePickerView())
+	case viewEventForm:
+		b.WriteString(m.eventFormView())
+	case viewHabits, viewTodos:
+		b.WriteString(m.bandView())
 	}
 
 	b.WriteString("\n")
@@ -132,6 +136,15 @@ func (m *Model) header() string {
 	b.WriteString(heyui.Rule(w, m.locationName()))
 	b.WriteString("\n")
 
+	if m.view == viewCalendar && m.chromeLevel < chromeNoBoxBar {
+		b.WriteString(heyui.NavRow([]heyui.NavItem{
+			{Label: "Day", Shortcut: "1"},
+			{Label: "Week", Shortcut: "2"},
+			{Label: "Year", Shortcut: "3"},
+		}, int(m.calView), true, w))
+		b.WriteString("\n")
+	}
+
 	if m.view == viewBoxes || m.view == viewThreads {
 		if m.chromeLevel < chromeNoBoxBar {
 			if bar := m.boxBar(w); bar != "" {
@@ -171,12 +184,25 @@ func (m *Model) locationName() string {
 		return "The Screener"
 	case viewCompose:
 		return composeTitle(m.compose)
-	case viewCalendar:
-		if m.calView == calendarDay {
-			return "Day"
+	case viewEventForm:
+		if m.eventForm != nil && m.eventForm.id != "" {
+			return "Edit event"
 		}
 
-		return "Week"
+		return "New event"
+	case viewHabits:
+		return "Habits"
+	case viewTodos:
+		return "Todos"
+	case viewCalendar:
+		switch m.calView {
+		case calendarDay:
+			return "Day"
+		case calendarYear:
+			return "Year"
+		default:
+			return "Week"
+		}
 	case viewJournal:
 		return "Journal"
 	default:
@@ -358,9 +384,25 @@ func (m *Model) keyBindings() []keyBinding {
 		}
 	case viewMovePicker:
 		return []keyBinding{{"up/down", "choose"}, {"enter", "move"}, {"esc", "cancel"}}
+	case viewEventForm:
+		return []keyBinding{
+			{"tab", "field"}, {"ctrl+d", "save"}, {"esc", "cancel"},
+		}
+	case viewHabits:
+		return []keyBinding{
+			{"j/k", "navigate"}, {"space", "keep today"}, {"a", "add"},
+			{"d", "archive"}, {"esc", "back"},
+		}
+	case viewTodos:
+		return []keyBinding{
+			{"j/k", "navigate"}, {"space", "complete"}, {"a", "add"}, {"esc", "back"},
+		}
 	case viewCalendar:
 		return []keyBinding{
-			{"1", "day"}, {"2", "week"}, {"p/n", "back, forward"}, {"t", "today"},
+			{"1", "day"}, {"2", "week"}, {"3", "year"},
+			{"p/n", "back, forward"}, {"t", "today"},
+			{"c", "new event"}, {"enter", "edit"}, {"D", "delete"},
+			{"b", "habits"}, {"s", "todos"},
 			{"tab", "section"}, {"r", "reload"}, {"?", "help"}, {"q", "quit"},
 		}
 	default:
@@ -716,7 +758,8 @@ func (m *Model) movePickerView() string {
 
 // --- calendar and journal ---------------------------------------------------
 
-// calendarView draws hey-cli's own week or day grid.
+// calendarView draws hey-cli's own day, week or year grid, with the habits
+// band above it and the todo ribbon below.
 func (m *Model) calendarView() string {
 	if m.cal == nil {
 		return dimStyle.Render("  Calendar is not configured. Run `frankenstein calendar setup`.")
@@ -741,23 +784,55 @@ func (m *Model) calendarView() string {
 		})
 	}
 
-	kind := heyui.CalendarWeek
-	if m.calView == calendarDay {
-		kind = heyui.CalendarDay
-	}
-
 	selected := ""
 	if i := m.extraIdx; i >= 0 && i < len(events) {
 		selected = heyui.Key(events[i])
 	}
 
-	hint := ""
-	if len(events) == 0 {
-		hint = "Nothing scheduled."
+	hint := "p/n " + m.calPeriodName()
+
+	// The todo ribbon takes rows from the grid, so the grid is told what is
+	// left rather than the whole height.
+	ribbon := heyui.TodosRibbon(m.calTodos, m.contentWidth())
+
+	height := m.pageSize() - lineCount(ribbon)
+	if height < 6 {
+		height = maxInt(1, m.pageSize())
+		ribbon = ""
 	}
 
-	return heyui.Calendar(kind, events, m.calAnchor(), time.Monday,
-		m.contentWidth(), m.pageSize(), hint, selected, true)
+	grid := heyui.Calendar(m.calKind(), events, m.calHabits, m.calAnchor(),
+		time.Monday, m.contentWidth(), height, hint, selected, true)
+
+	if ribbon == "" {
+		return grid
+	}
+
+	return grid + "\n" + ribbon
+}
+
+// calKind maps the section's view onto the renderer's.
+func (m *Model) calKind() heyui.CalendarView {
+	switch m.calView {
+	case calendarDay:
+		return heyui.CalendarDay
+	case calendarYear:
+		return heyui.CalendarYear
+	default:
+		return heyui.CalendarWeek
+	}
+}
+
+// calPeriodName is what p and n step through.
+func (m *Model) calPeriodName() string {
+	switch m.calView {
+	case calendarDay:
+		return "day"
+	case calendarYear:
+		return "year"
+	default:
+		return "week"
+	}
 }
 
 // calAnchor is the day or week being shown.

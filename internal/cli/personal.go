@@ -15,6 +15,8 @@ import (
 	gcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar/google"
 	"github.com/mhrsntrk/frankenstein-cli/internal/config"
 	"github.com/mhrsntrk/frankenstein-cli/internal/personal"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui"
+	"github.com/mhrsntrk/frankenstein-cli/internal/when"
 )
 
 func personalStore(app *App) (*personal.Store, error) {
@@ -66,6 +68,91 @@ type todo struct {
 	Due    *time.Time `json:"due,omitempty"`
 	Done   bool       `json:"done"`
 	ListID string     `json:"list_id"`
+}
+
+// listTodos reads the open todos, for the calendar's "Sometime this week"
+// ribbon. It returns the TUI's own shape so that package needs no Google
+// dependency.
+func listTodos(ctx context.Context, app *App) ([]tui.TodoItem, error) {
+	svc, err := tasksService(ctx, app)
+	if err != nil {
+		return nil, err
+	}
+
+	listID, err := defaultTaskList(ctx, svc)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := svc.Tasks.List(listID).MaxResults(50).Context(ctx).Do()
+	if err != nil {
+		return nil, fmt.Errorf("list todos: %w", err)
+	}
+
+	out := make([]tui.TodoItem, 0, len(res.Items))
+
+	for _, t := range res.Items {
+		out = append(out, tui.TodoItem{Title: t.Title, Done: t.Status == "completed"})
+	}
+
+	return out, nil
+}
+
+// addTodo creates a todo, for the calendar's manager.
+func addTodo(ctx context.Context, app *App, title string) error {
+	svc, err := tasksService(ctx, app)
+	if err != nil {
+		return err
+	}
+
+	listID, err := defaultTaskList(ctx, svc)
+	if err != nil {
+		return err
+	}
+
+	if _, err := svc.Tasks.Insert(listID, &tasks.Task{Title: title}).Context(ctx).Do(); err != nil {
+		return fmt.Errorf("add todo: %w", err)
+	}
+
+	return nil
+}
+
+// completeTodoByTitle marks a todo done.
+//
+// It matches on the title because that is what the calendar ribbon shows; the
+// underlying IDs never reach the TUI, which is what keeps the Google packages
+// out of it.
+func completeTodoByTitle(ctx context.Context, app *App, title string) error {
+	svc, err := tasksService(ctx, app)
+	if err != nil {
+		return err
+	}
+
+	listID, err := defaultTaskList(ctx, svc)
+	if err != nil {
+		return err
+	}
+
+	res, err := svc.Tasks.List(listID).MaxResults(100).Context(ctx).Do()
+	if err != nil {
+		return err
+	}
+
+	for _, t := range res.Items {
+		if t.Title != title || t.Status == "completed" {
+			continue
+		}
+
+		t.Status = "completed"
+
+		if _, err := svc.Tasks.Update(listID, t.Id, t).Context(ctx).Do(); err != nil {
+			return fmt.Errorf("complete todo: %w", err)
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("no open todo called %q", title)
 }
 
 func newTodoCmd(app *App) *cobra.Command {
@@ -568,18 +655,7 @@ func newTimeReportCmd(app *App) *cobra.Command {
 	return cmd
 }
 
-func formatDuration(d time.Duration) string {
-	d = d.Round(time.Minute)
-
-	h := int(d.Hours())
-	m := int(d.Minutes()) % 60
-
-	if h == 0 {
-		return fmt.Sprintf("%dm", m)
-	}
-
-	return fmt.Sprintf("%dh %02dm", h, m)
-}
+func formatDuration(d time.Duration) string { return when.FormatDuration(d) }
 
 // --- journal ----------------------------------------------------------------
 

@@ -44,6 +44,10 @@ type Habit struct {
 
 	// Last30 is how many of the last 30 days were done.
 	Last30 int `json:"last_30"`
+
+	// DoneDays are the days it was kept, most recent first. The calendar's
+	// habit band needs the days themselves, not just a count.
+	DoneDays []time.Time `json:"-"`
 }
 
 // AddHabit creates a habit.
@@ -138,6 +142,15 @@ func (s *Store) fillHabitStats(ctx context.Context, h *Habit) error {
 
 	today := time.Now()
 	h.DoneToday = done[dayKey(today)]
+
+	// The days themselves, for anything drawing a calendar band. A year is
+	// enough for any view and keeps the slice small.
+	for i := range 365 {
+		day := today.AddDate(0, 0, -i)
+		if done[dayKey(day)] {
+			h.DoneDays = append(h.DoneDays, day)
+		}
+	}
 
 	// A streak survives today not being done yet: it counts back from
 	// yesterday in that case, so an unfinished morning does not read as zero.

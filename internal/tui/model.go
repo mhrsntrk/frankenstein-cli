@@ -37,10 +37,29 @@ const (
 // calendarView is which of hey-cli's grids the calendar section draws.
 type calendarView int
 
+// The order matches the sub-nav: 1 Day, 2 Week, 3 Year.
 const (
-	calendarWeek calendarView = iota
-	calendarDay
+	calendarDay calendarView = iota
+	calendarWeek
+	calendarYear
 )
+
+// TodoItem is one todo, as little of it as the ribbon needs.
+type TodoItem struct {
+	Title string
+	Done  bool
+}
+
+// TodoLister reads the todo list.
+type TodoLister func(context.Context) ([]TodoItem, error)
+
+// Todos is how the command layer supplies todo access. Any nil field simply
+// makes that operation unavailable rather than failing.
+type Todos struct {
+	List     TodoLister
+	Add      func(context.Context, string) error
+	Complete func(context.Context, string) error
+}
 
 // view is which screen is on top.
 type view int
@@ -55,6 +74,9 @@ const (
 	viewCalendar
 	viewJournal
 	viewMovePicker
+	viewEventForm
+	viewHabits
+	viewTodos
 )
 
 // section is the top-level area, switched with tab.
@@ -155,13 +177,27 @@ type Model struct {
 	calView   calendarView
 	calOffset int
 
+	// calHabits and calTodos fill the bands above and below the grid. Habits
+	// are local; todos come from Google Tasks.
+	calHabits []heyui.Habit
+	calTodos  []heyui.Todo
+
+	// The todo functions are supplied by the command layer, so this package
+	// needs no Google dependency. Nil means the ribbon and its manager are
+	// simply unavailable.
+	todos          TodoLister
+	addTodoFn      func(context.Context, string) error
+	completeTodoFn func(context.Context, string) error
+
 	journal  []personal.JournalEntry
 	extraIdx int
 
 	senders   []screener.Sender
 	senderIdx int
 
-	compose *composeState
+	compose   *composeState
+	eventForm *eventForm
+	band      *bandEditor
 
 	// moveTargets is the box picker's list, shown over the thread list.
 	moveTargets []mail.Box
@@ -202,6 +238,7 @@ func New(
 	sc *screener.Screener,
 	ps *personal.Store,
 	cal fcal.Provider,
+	todos Todos,
 	cfg config.Config,
 ) *Model {
 	filter := textinput.New()
@@ -213,18 +250,22 @@ func New(
 	move.CharLimit = 60
 
 	return &Model{
-		store:      st,
-		syncer:     syncer,
-		provider:   p,
-		screener:   sc,
-		personal:   ps,
-		cal:        cal,
-		calendarID: cfg.Calendar.CalendarID,
-		cfg:        cfg,
-		filter:     filter,
-		moveFilter: move,
-		list:       heyui.NewList(),
-		status:     "loading",
+		store:          st,
+		syncer:         syncer,
+		provider:       p,
+		screener:       sc,
+		personal:       ps,
+		cal:            cal,
+		todos:          todos.List,
+		addTodoFn:      todos.Add,
+		completeTodoFn: todos.Complete,
+		calendarID:     cfg.Calendar.CalendarID,
+		cfg:            cfg,
+		filter:         filter,
+		moveFilter:     move,
+		list:           heyui.NewList(),
+		calView:        calendarWeek,
+		status:         "loading",
 	}
 }
 

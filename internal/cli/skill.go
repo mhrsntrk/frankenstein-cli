@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 
@@ -112,7 +113,25 @@ func newTUICmd(app *App) *cobra.Command {
 
 			sc := screener.New(st, p, cfg.Screener)
 
-			return tui.Run(tui.New(st, syncer, p, sc, ps, cal, cfg))
+			// Todos are optional in the same way the calendar is: an
+			// unconfigured Google account means no ribbon, not a failure.
+			var todos tui.Todos
+
+			if cal != nil {
+				todos = tui.Todos{
+					List: func(ctx context.Context) ([]tui.TodoItem, error) {
+						return listTodos(ctx, app)
+					},
+					Add: func(ctx context.Context, title string) error {
+						return addTodo(ctx, app, title)
+					},
+					Complete: func(ctx context.Context, title string) error {
+						return completeTodoByTitle(ctx, app, title)
+					},
+				}
+			}
+
+			return tui.Run(tui.New(st, syncer, p, sc, ps, cal, todos, cfg))
 		},
 	}
 }

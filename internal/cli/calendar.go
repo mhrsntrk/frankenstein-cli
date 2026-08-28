@@ -13,6 +13,7 @@ import (
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	gcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar/google"
 	"github.com/mhrsntrk/frankenstein-cli/internal/config"
+	"github.com/mhrsntrk/frankenstein-cli/internal/when"
 )
 
 // calendarProvider builds a Google calendar provider from the stored config
@@ -320,43 +321,9 @@ func newEventsCmd(app *App) *cobra.Command {
 	return cmd
 }
 
-// parseWhen accepts the handful of date and time formats a person will
-// actually type at a terminal.
-func parseWhen(s string) (time.Time, error) {
-	s = strings.TrimSpace(s)
-	now := time.Now()
-
-	switch strings.ToLower(s) {
-	case "", "now":
-		return now, nil
-	case "today":
-		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local), nil
-	case "tomorrow":
-		return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.Local), nil
-	}
-
-	for _, layout := range []string{
-		"2006-01-02 15:04",
-		"2006-01-02T15:04",
-		"2006-01-02",
-		"15:04",
-	} {
-		t, err := time.ParseInLocation(layout, s, time.Local)
-		if err != nil {
-			continue
-		}
-
-		// A bare time means today at that time.
-		if layout == "15:04" {
-			return time.Date(now.Year(), now.Month(), now.Day(),
-				t.Hour(), t.Minute(), 0, 0, time.Local), nil
-		}
-
-		return t, nil
-	}
-
-	return time.Time{}, fmt.Errorf("could not read %q as a date; try 2006-01-02 15:04", s)
-}
+// parseWhen is the shared parser, so the command layer and the TUI accept the
+// same input.
+func parseWhen(s string) (time.Time, error) { return when.Parse(s) }
 
 func newEventAddCmd(app *App) *cobra.Command {
 	var (

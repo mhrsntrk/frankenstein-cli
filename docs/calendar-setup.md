@@ -109,10 +109,18 @@ In the TUI the calendar is hey-cli's own grid:
 
 | | |
 |---|---|
-| `1` `2` | day, week |
-| `p` `n` | back, forward a period |
-| `t` | back to today |
+| `1` `2` `3` | day, week, year |
+| `p` `n` `t` | back, forward, today |
+| `c` | new event |
+| `enter` | edit the selected event |
+| `D` | delete it |
+| `b` | habits, which are local |
+| `s` | todos, which are Google Tasks |
 | `tab` | next section |
+
+The habits band above the grid and the "Sometime this week" ribbon below it
+come from those last two. Habits are stored locally; todos are the same Google
+Tasks list `frankenstein todo` uses.
 
 ## Where things end up
 
