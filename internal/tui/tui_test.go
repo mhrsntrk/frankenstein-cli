@@ -917,3 +917,68 @@ func TestWheelScrollsWithoutMovingTheCursor(t *testing.T) {
 		t.Error("the wheel moved the cursor; it should only scroll")
 	}
 }
+
+// p and t are paper-trail and trash in the mail views, and were being taken
+// there before the calendar ever saw them. Only n and the digits worked.
+func TestCalendarKeysAreNotEatenByMailActions(t *testing.T) {
+	h := newHarness(t)
+	h.m.section = sectionCalendar
+	h.m.view = viewCalendar
+
+	cases := []struct {
+		key    string
+		offset int
+		grid   calendarView
+	}{
+		{"n", 1, calendarWeek},
+		{"n", 2, calendarWeek},
+		{"p", 1, calendarWeek},
+		{"p", 0, calendarWeek},
+		{"p", -1, calendarWeek},
+		{"t", 0, calendarWeek},
+		{"1", 0, calendarDay},
+		{"n", 1, calendarDay},
+		{"t", 0, calendarDay},
+		{"2", 0, calendarWeek},
+	}
+
+	for i, c := range cases {
+		h.press(t, c.key)
+
+		if h.m.calOffset != c.offset {
+			t.Errorf("step %d: %q left the offset at %d, want %d",
+				i, c.key, h.m.calOffset, c.offset)
+		}
+
+		if h.m.calView != c.grid {
+			t.Errorf("step %d: %q left the grid as %v, want %v",
+				i, c.key, h.m.calView, c.grid)
+		}
+	}
+
+	// None of it may have reached into the mailbox.
+	if len(h.p.Labelled) > 0 || len(h.p.Unlabelled) > 0 {
+		t.Errorf("calendar keys touched mail: labelled %v unlabelled %v",
+			h.p.Labelled, h.p.Unlabelled)
+	}
+}
+
+// The keys a section does not claim still have to work in it.
+func TestSharedKeysStillWorkInTheCalendar(t *testing.T) {
+	h := newHarness(t)
+	h.m.section = sectionCalendar
+	h.m.view = viewCalendar
+
+	h.press(t, "?")
+
+	if !h.m.help {
+		t.Error("? did not open help from the calendar")
+	}
+
+	h.press(t, "j")
+	h.press(t, "tab")
+
+	if h.m.section != sectionJournal {
+		t.Errorf("tab from the calendar gave section %v, want journal", h.m.section)
+	}
+}

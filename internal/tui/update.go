@@ -196,6 +196,15 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// A section's own keys are read before the mail actions, or the shared
+	// letters never reach it: p is paper-trail and t is trash in the mail
+	// views, and both were swallowing the calendar's own meaning for them.
+	if m.view == viewCalendar {
+		if model, cmd, handled := m.calendarKey(msg); handled {
+			return model, cmd
+		}
+	}
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		m.quitting = true
@@ -357,32 +366,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// In the calendar the digits pick a grid rather than a box.
-	if m.view == viewCalendar {
-		switch msg.String() {
-		case "1":
-			m.calView, m.calOffset = calendarDay, 0
-
-			return m, m.loadEvents()
-		case "2":
-			m.calView, m.calOffset = calendarWeek, 0
-
-			return m, m.loadEvents()
-		case "n":
-			m.calOffset++
-
-			return m, m.loadEvents()
-		case "p":
-			m.calOffset--
-
-			return m, m.loadEvents()
-		case "t":
-			m.calOffset = 0
-
-			return m, m.loadEvents()
-		}
-	}
-
 	// 1-9 jump straight to a box, which is what keeps every box one keystroke
 	// away instead of a walk back up the stack.
 	if k := msg.String(); len(k) == 1 && k[0] >= '1' && k[0] <= '9' {
@@ -401,6 +384,41 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// calendarKey handles the keys that only mean something in the calendar.
+//
+// The third return says whether it took the key. Anything it does not take
+// falls through to the shared bindings, so j/k, tab and q still work there.
+func (m *Model) calendarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool) {
+	switch msg.String() {
+	case "1":
+		m.calView, m.calOffset = calendarDay, 0
+
+		return m, m.loadEvents(), true
+
+	case "2":
+		m.calView, m.calOffset = calendarWeek, 0
+
+		return m, m.loadEvents(), true
+
+	case "n":
+		m.calOffset++
+
+		return m, m.loadEvents(), true
+
+	case "p":
+		m.calOffset--
+
+		return m, m.loadEvents(), true
+
+	case "t":
+		m.calOffset = 0
+
+		return m, m.loadEvents(), true
+	}
+
+	return m, nil, false
 }
 
 // enterSection switches between Mail, Calendar and Journal.
