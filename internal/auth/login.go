@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/cookiejar"
 	"strings"
+	"sync"
 
 	"github.com/ProtonMail/go-proton-api"
 	"github.com/ProtonMail/gopenpgp/v2/crypto"
@@ -56,10 +58,17 @@ type Credentials struct {
 // and sending; protonapi does conversations, newsletters and event deltas,
 // which upstream does not model.
 type Client struct {
-	Manager   *proton.Manager
-	Client    *proton.Client
-	API       *protonapi.Client
-	Auth      proton.Auth
+	Manager *proton.Manager
+	Client  *proton.Client
+	API     *protonapi.Client
+
+	// mu guards Auth. The auth handler rewrites it on every token rotation,
+	// which happens on the library's own goroutine timing, while Session()
+	// may be reading it from a persistence callback or the CLI. Read Auth
+	// through Session() rather than the field once the client is live.
+	mu   sync.Mutex
+	Auth proton.Auth
+
 	UserKR    *crypto.KeyRing
 	AddrKRs   map[string]*crypto.KeyRing
 	Addresses []proton.Address
@@ -75,6 +84,9 @@ func (c *Client) Provider() mail.Provider {
 
 // Session converts the client into a persistable session.
 func (c *Client) Session() Session {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	return Session{
 		UID:           c.Auth.UID,
 		RefreshToken:  c.Auth.RefreshToken,
@@ -213,10 +225,13 @@ func Resume(ctx context.Context, cfg config.Config, store *Store) (*Client, erro
 	if err != nil {
 		m.Close()
 
-		// The old token is spent whether or not the exchange succeeded, so a
-		// failure here means the stored session is dead. Clear it rather than
-		// leaving the user to re-run a command that cannot work.
-		_ = store.Clear()
+		// Clear only when Proton itself rejected the token. A DNS failure,
+		// a timeout or a cancelled context says nothing about the token,
+		// and clearing on those would destroy a live session over a flaky
+		// network, forcing a full login with captcha and 2FA.
+		if shouldClearSession(err) {
+			_ = store.Clear()
+		}
 
 		return nil, fmt.Errorf("resume session: %w", err)
 	}
@@ -264,9 +279,19 @@ func Resume(ctx context.Context, cfg config.Config, store *Store) (*Client, erro
 		SaltedKeyPass: sess.SaltedKeyPass,
 	}
 
+	client.wireAPIAuth()
+
 	// Persist the rotated token immediately, then on every later rotation.
+	// The save is retried once because losing it means losing the only copy
+	// of a token Proton has already spent the predecessor of; a transient
+	// keyring hiccup should not cost the whole session.
 	if err := store.Save(client.Session()); err != nil {
-		return nil, fmt.Errorf("persist refreshed session: %w", err)
+		if err = store.Save(client.Session()); err != nil {
+			c.Close()
+			m.Close()
+
+			return nil, fmt.Errorf("persist refreshed session: %w", err)
+		}
 	}
 
 	client.OnSessionChange(func(s Session) { _ = store.Save(s) })
@@ -286,7 +311,21 @@ func unlock(ctx context.Context, cfg config.Config, m *proton.Manager, c *proton
 		return nil, fmt.Errorf("get salts: %w", err)
 	}
 
-	keyID := user.Keys.Primary().ID
+	// user.Keys.Primary() panics when no key is marked primary, which a
+	// keyless or half-provisioned account can legitimately produce. Scan by
+	// hand so that shape comes back as an error instead of a crash.
+	var keyID string
+
+	for _, key := range user.Keys {
+		if key.Primary {
+			keyID = key.ID
+			break
+		}
+	}
+
+	if keyID == "" {
+		return nil, errors.New("this account has no primary key, so the mailbox cannot be unlocked")
+	}
 
 	saltedKeyPass, err := salts.SaltForKey(mboxPass, keyID)
 	if err != nil {
@@ -309,7 +348,7 @@ func unlock(ctx context.Context, cfg config.Config, m *proton.Manager, c *proton
 		return nil, fmt.Errorf("unlock keys: %w", err)
 	}
 
-	return &Client{
+	cl := &Client{
 		Manager:       m,
 		Client:        c,
 		API:           protonapi.New(cfg.APIHost, cfg.AppVersion, auth.UID, auth.AccessToken),
@@ -319,7 +358,72 @@ func unlock(ctx context.Context, cfg config.Config, m *proton.Manager, c *proton
 		Addresses:     addrs,
 		User:          user,
 		SaltedKeyPass: saltedKeyPass,
-	}, nil
+	}
+
+	cl.wireAPIAuth()
+
+	return cl, nil
+}
+
+// wireAPIAuth ties the two API clients' credential lifecycles together, and
+// must run once right after the Client is assembled.
+//
+// The first half pushes every rotation go-proton-api performs into the side
+// client, so it never keeps serving a token Proton has retired. The second
+// half covers the reverse gap: the side client cannot refresh a session on
+// its own (only go-proton-api holds the refresh token), so on a 401 it asks
+// us to force a request through the upstream client. That request trips the
+// library's own 401 recovery, which fires the handler registered here, which
+// updates the side client before its retry.
+func (c *Client) wireAPIAuth() {
+	// Registered before any OnSessionChange handler on purpose: handlers run
+	// in registration order, so Auth is current by the time a persistence
+	// callback reads it through Session().
+	c.Client.AddAuthHandler(func(a proton.Auth) {
+		c.mu.Lock()
+		c.Auth = a
+		c.mu.Unlock()
+
+		c.API.SetAuth(a.UID, a.AccessToken)
+	})
+
+	c.API.SetRefreshFunc(func(ctx context.Context) error {
+		// GetUser is the cheapest request the upstream client always has
+		// the right to make; its only job here is to hit the 401 path.
+		_, err := c.Client.GetUser(ctx)
+		return err
+	})
+}
+
+// shouldClearSession decides whether a failed refresh exchange means the
+// stored session is dead. This is the line between "log in again" and
+// "destroyed a live session because the wifi blinked", so it is deliberately
+// a pure function with the table pinned by tests.
+func shouldClearSession(err error) bool {
+	// A cancelled or timed-out attempt proves nothing about the token.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	// Transport failures (DNS, TLS, refused connections) never reach Proton,
+	// so the token was not judged at all.
+	var apiErr *proton.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+
+	switch apiErr.Status {
+	case http.StatusUnauthorized:
+		return true
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		// Proton reports a spent or revoked refresh token as 400/422 with
+		// code 10013. Other errors under the same statuses — a retired app
+		// version is the common one — leave the token usable once the
+		// client-side problem is fixed, so the session must survive them.
+		return apiErr.Code == proton.AuthRefreshTokenInvalid
+	default:
+		return false
+	}
 }
 
 // asHumanVerification converts a 9001 API error into a challenge.
@@ -370,16 +474,10 @@ func annotateAppVersion(err error) error {
 //
 // This lives here rather than in the caller so that no package outside
 // internal/auth and internal/mail/protonmail has to import a Proton type.
+// Propagating the new tokens into the client itself is not this method's job;
+// wireAPIAuth registers that handler at construction, before any of these.
 func (c *Client) OnSessionChange(fn func(Session)) {
-	c.Client.AddAuthHandler(func(a proton.Auth) {
-		c.Auth = a
-
-		// The second client carries the same session, so it has to learn the
-		// new token too or it starts 401ing after the first rotation.
-		if c.API != nil {
-			c.API.SetAuth(a.UID, a.AccessToken)
-		}
-
+	c.Client.AddAuthHandler(func(proton.Auth) {
 		fn(c.Session())
 	})
 }

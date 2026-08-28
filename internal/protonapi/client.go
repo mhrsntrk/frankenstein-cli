@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,29 @@ import (
 // maxPageSize is the API's cap; asking for more silently returns fewer.
 const maxPageSize = 150
 
+// maxWalkPages bounds the paging loops. A well-behaved server ends a walk long
+// before this; the cap exists so a server that keeps handing out cursors
+// cannot spin us forever.
+const maxWalkPages = 100
+
+const (
+	// maxRetries is how many times one call is re-sent after a 429 or 503.
+	// Rate limits on this API clear quickly; anything that survives two
+	// retries is worth surfacing to the user instead of stalling on.
+	maxRetries = 2
+
+	// maxRetryAfter caps how long a Retry-After header can make one call
+	// wait. Proton has been seen sending multi-minute values under abuse
+	// throttling, and blocking an interactive command that long is worse
+	// than failing.
+	maxRetryAfter = 30 * time.Second
+)
+
+// ErrTruncated marks a paged walk that hit maxWalkPages before the server
+// said it was done. The results returned alongside it are valid but
+// incomplete; callers decide whether partial data is usable.
+var ErrTruncated = errors.New("paging stopped before the server was drained")
+
 // Client talks to the endpoints go-proton-api does not wrap.
 //
 // It carries the same session as the upstream client: the UID and access token
@@ -27,6 +51,10 @@ type Client struct {
 	mu    sync.RWMutex
 	uid   string
 	token string
+
+	// refresh, when set, is invoked once per call on a 401 before the
+	// request is retried. See SetRefreshFunc.
+	refresh func(ctx context.Context) error
 
 	host       string
 	appVersion string
@@ -52,11 +80,38 @@ func (c *Client) SetAuth(uid, token string) {
 	c.uid, c.token = uid, token
 }
 
+// SetRefreshFunc installs a callback the client runs once when a request
+// comes back 401, before retrying that request a single time.
+//
+// This client cannot refresh a session itself: only go-proton-api holds the
+// refresh token. The callback's job is to push a request through the upstream
+// client so its own 401 recovery fires; the auth handler registered there
+// calls SetAuth here, and the retry picks the new token up. Without this hook
+// a run where only this client makes requests dies on the first token expiry.
+func (c *Client) SetRefreshFunc(fn func(ctx context.Context) error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.refresh = fn
+}
+
+func (c *Client) refreshFunc() func(ctx context.Context) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.refresh
+}
+
 // APIError is a non-2xx response from Proton.
 type APIError struct {
 	Status  int
 	Code    int    `json:"Code"`
 	Message string `json:"Error"`
+
+	// Snippet is the start of a response body that did not decode as
+	// Proton's error envelope. Proxies and load balancers answer with HTML
+	// pages, and without this the user sees a bare status code.
+	Snippet string `json:"-"`
 }
 
 func (e *APIError) Error() string {
@@ -64,11 +119,26 @@ func (e *APIError) Error() string {
 		return fmt.Sprintf("proton api: %s (code %d, status %d)", e.Message, e.Code, e.Status)
 	}
 
+	if e.Snippet != "" {
+		return fmt.Sprintf("proton api: status %d: %s", e.Status, e.Snippet)
+	}
+
 	return fmt.Sprintf("proton api: status %d", e.Status)
 }
 
+// snippetLen bounds how much of an undecodable body ends up in an error.
+const snippetLen = 200
+
+func bodySnippet(raw []byte) string {
+	if len(raw) > snippetLen {
+		return string(raw[:snippetLen]) + "..."
+	}
+
+	return string(raw)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body, out any) error {
-	var reader io.Reader
+	var payload []byte
 
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -76,7 +146,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 			return err
 		}
 
-		reader = bytes.NewReader(b)
+		payload = b
 	}
 
 	target := c.host + path
@@ -84,51 +154,126 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		target += "?" + query.Encode()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, target, reader)
-	if err != nil {
-		return err
-	}
+	// One call may be re-sent: once after a 401 that the refresh hook
+	// recovered from, and up to maxRetries times after a 429 or 503. The
+	// body is kept as bytes so each attempt gets a fresh reader.
+	refreshed := false
 
-	c.mu.RLock()
-	uid, token := c.uid, c.token
-	c.mu.RUnlock()
+	for retries := 0; ; {
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(payload)
+		}
 
-	req.Header.Set("x-pm-uid", uid)
-	req.Header.Set("x-pm-appversion", c.appVersion)
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.protonmail.v1+json")
+		req, err := http.NewRequestWithContext(ctx, method, target, reader)
+		if err != nil {
+			return err
+		}
 
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
+		// Auth is re-read on every attempt so a refresh between attempts
+		// is picked up.
+		c.mu.RLock()
+		uid, token := c.uid, c.token
+		c.mu.RUnlock()
 
-	res, err := c.hc.Do(req)
-	if err != nil {
-		return fmt.Errorf("%s %s: %w", method, path, err)
-	}
-	defer res.Body.Close()
+		req.Header.Set("x-pm-uid", uid)
+		req.Header.Set("x-pm-appversion", c.appVersion)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Accept", "application/vnd.protonmail.v1+json")
 
-	raw, err := io.ReadAll(res.Body)
-	if err != nil {
-		return fmt.Errorf("%s %s: read body: %w", method, path, err)
-	}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
 
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		apiErr := &APIError{Status: res.StatusCode}
-		_ = json.Unmarshal(raw, apiErr)
+		res, err := c.hc.Do(req)
+		if err != nil {
+			return fmt.Errorf("%s %s: %w", method, path, err)
+		}
 
-		return apiErr
-	}
+		raw, err := io.ReadAll(res.Body)
+		res.Body.Close()
 
-	if out == nil {
+		if err != nil {
+			return fmt.Errorf("%s %s: read body: %w", method, path, err)
+		}
+
+		if res.StatusCode == http.StatusUnauthorized && !refreshed {
+			if fn := c.refreshFunc(); fn != nil {
+				refreshed = true
+
+				if err := fn(ctx); err != nil {
+					return fmt.Errorf("%s %s: refresh session after 401: %w", method, path, err)
+				}
+
+				continue
+			}
+		}
+
+		if (res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusServiceUnavailable) && retries < maxRetries {
+			retries++
+
+			if err := sleepCtx(ctx, retryDelay(res.Header.Get("Retry-After"), retries)); err != nil {
+				return fmt.Errorf("%s %s: waiting to retry after %d: %w", method, path, res.StatusCode, err)
+			}
+
+			continue
+		}
+
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			apiErr := &APIError{Status: res.StatusCode}
+			_ = json.Unmarshal(raw, apiErr)
+
+			if apiErr.Message == "" {
+				apiErr.Snippet = bodySnippet(raw)
+			}
+
+			return apiErr
+		}
+
+		if out == nil {
+			return nil
+		}
+
+		if err := json.Unmarshal(raw, out); err != nil {
+			return fmt.Errorf("%s %s: decode: %w", method, path, err)
+		}
+
 		return nil
 	}
+}
 
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("%s %s: decode: %w", method, path, err)
+// retryDelay converts a Retry-After header into a wait, capped so an abusive
+// value cannot hang an interactive command. With no usable header the wait
+// grows with the attempt count instead.
+func retryDelay(header string, attempt int) time.Duration {
+	if header != "" {
+		if secs, err := strconv.Atoi(header); err == nil && secs >= 0 {
+			return min(time.Duration(secs)*time.Second, maxRetryAfter)
+		}
+
+		if t, err := http.ParseTime(header); err == nil {
+			return min(max(time.Until(t), 0), maxRetryAfter)
+		}
 	}
 
-	return nil
+	return time.Duration(attempt) * time.Second
+}
+
+// sleepCtx waits for d unless the context ends first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+
+	t := time.NewTimer(d)
+	defer t.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // ConversationFilter selects which conversations to list.
@@ -163,8 +308,10 @@ func (f ConversationFilter) query(page, pageSize int) url.Values {
 	return q
 }
 
-// Conversations lists one page of threads.
-func (c *Client) Conversations(ctx context.Context, page, pageSize int, filter ConversationFilter) ([]Conversation, error) {
+// Conversations lists one page of threads. The second return is the server's
+// total for the filter, which is what lets a caller tell "last page" apart
+// from "empty page" without issuing one request too many.
+func (c *Client) Conversations(ctx context.Context, page, pageSize int, filter ConversationFilter) ([]Conversation, int, error) {
 	if pageSize <= 0 || pageSize > maxPageSize {
 		pageSize = maxPageSize
 	}
@@ -176,10 +323,10 @@ func (c *Client) Conversations(ctx context.Context, page, pageSize int, filter C
 
 	if err := c.do(ctx, http.MethodGet, "/mail/v4/conversations",
 		filter.query(page, pageSize), nil, &res); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	return res.Conversations, nil
+	return res.Conversations, res.Total, nil
 }
 
 // Conversation returns one thread together with its messages.
@@ -237,6 +384,11 @@ func (c *Client) MarkConversationsUnread(ctx context.Context, ids []string, labe
 	return c.conversationAction(ctx, "unread", ids, labelID)
 }
 
+// conversationAction applies one action to threads in chunks of the API's
+// batch cap. The chunks are not atomic: retries inside do() cover a single
+// request, so a failure partway leaves earlier chunks applied and later ones
+// not. The actions are all idempotent, which makes re-running the command the
+// recovery.
 func (c *Client) conversationAction(ctx context.Context, action string, ids []string, labelID string) error {
 	for _, chunk := range chunkStrings(ids, maxPageSize) {
 		body := struct {
@@ -271,10 +423,14 @@ func (c *Client) LatestEventID(ctx context.Context) (string, error) {
 //
 // A non-zero Refresh on any event means the cursor is too old to reconcile
 // from and the caller must rebuild its cache.
+//
+// Hitting the page cap returns the events collected so far with ErrTruncated;
+// the last event's ID is a valid cursor, so the caller can persist it and
+// drain the rest on the next poll.
 func (c *Client) Events(ctx context.Context, cursor string) ([]Event, error) {
 	var out []Event
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < maxWalkPages; i++ {
 		var e Event
 
 		if err := c.do(ctx, http.MethodGet,
@@ -292,7 +448,7 @@ func (c *Client) Events(ctx context.Context, cursor string) ([]Event, error) {
 		cursor = e.EventID
 	}
 
-	return out, nil
+	return out, fmt.Errorf("event stream still had more after %d pages: %w", maxWalkPages, ErrTruncated)
 }
 
 // NewsletterFilter selects which subscriptions to list.
@@ -308,13 +464,15 @@ type NewsletterFilter struct {
 }
 
 // NewsletterSubscriptions walks every page and returns all mailing lists.
+// Hitting the page cap returns what was collected with ErrTruncated rather
+// than silently passing off a partial list as the whole account.
 func (c *Client) NewsletterSubscriptions(ctx context.Context, filter NewsletterFilter) ([]NewsletterSubscription, error) {
 	var (
 		all    []NewsletterSubscription
 		cursor string
 	)
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < maxWalkPages; i++ {
 		q := url.Values{}
 		q.Set("PageSize", "100")
 
@@ -358,7 +516,7 @@ func (c *Client) NewsletterSubscriptions(ctx context.Context, filter NewsletterF
 		cursor = next
 	}
 
-	return all, nil
+	return all, fmt.Errorf("newsletter subscriptions still had more after %d pages: %w", maxWalkPages, ErrTruncated)
 }
 
 // UpdateNewsletterSubscriptionReq changes a list's server-side handling.

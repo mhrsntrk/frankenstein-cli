@@ -49,6 +49,13 @@ func (s Session) Valid() bool { return s.UID != "" && s.RefreshToken != "" }
 type Store struct {
 	// fallbackPath is used when the keyring is unavailable.
 	fallbackPath string
+
+	// Warn, when set, receives non-fatal notices — currently only "the
+	// keyring refused the write, the session went to the fallback file".
+	// It is a field rather than an extra return value because Save is also
+	// called from the token-rotation callback, where there is nobody to
+	// hand a second return to. Nil means the notice is dropped.
+	Warn func(msg string)
 }
 
 // NewStore returns a session store.
@@ -68,12 +75,19 @@ func (s *Store) Save(sess Session) error {
 		return err
 	}
 
-	if err := keyring.Set(keyringService, keyringUser, string(b)); err == nil {
+	kerr := keyring.Set(keyringService, keyringUser, string(b))
+	if kerr == nil {
 		// Belt and braces: if a fallback file exists from an earlier run
 		// without a keyring, remove it rather than leaving a stale secret.
 		_ = os.Remove(s.fallbackPath)
 
 		return nil
+	}
+
+	// The fallback below keeps the session alive, but the user should know
+	// their secret now lives on disk and that the keyring is misbehaving.
+	if s.Warn != nil {
+		s.Warn(fmt.Sprintf("keyring unavailable (%v); storing session in %s", kerr, s.fallbackPath))
 	}
 
 	if err := os.MkdirAll(filepath.Dir(s.fallbackPath), 0o700); err != nil {
@@ -89,7 +103,8 @@ func (s *Store) Save(sess Session) error {
 
 // Load reads the stored session, returning ErrNoSession when there is none.
 func (s *Store) Load() (Session, error) {
-	if raw, err := keyring.Get(keyringService, keyringUser); err == nil {
+	raw, kerr := keyring.Get(keyringService, keyringUser)
+	if kerr == nil {
 		var sess Session
 
 		if err := json.Unmarshal([]byte(raw), &sess); err != nil {
@@ -99,8 +114,20 @@ func (s *Store) Load() (Session, error) {
 		return sess, nil
 	}
 
+	// Any keyring failure falls through to the file, because a session saved
+	// while the keyring was down lives there. The keyring error still
+	// matters when the file is also absent: see below.
 	b, err := os.ReadFile(s.fallbackPath)
 	if os.IsNotExist(err) {
+		// "Not found" from the keyring plus no fallback file is a clean
+		// first run. Anything else from the keyring is a real keychain
+		// failure — a locked or corrupt keychain, a denied prompt — and
+		// reporting it as "no session" would send the user through a full
+		// login whose Save is likely to hit the same wall.
+		if !errors.Is(kerr, keyring.ErrNotFound) {
+			return Session{}, fmt.Errorf("read keyring session: %w", kerr)
+		}
+
 		return Session{}, ErrNoSession
 	}
 
