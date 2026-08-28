@@ -2,6 +2,7 @@ package screener_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -572,4 +573,396 @@ func TestPaletteBorrowsFromExistingLabels(t *testing.T) {
 			t.Errorf("created %q with no colour", b.Name)
 		}
 	}
+}
+
+// flaky wraps the fake provider so a test can fail exactly one kind of call.
+type flaky struct {
+	*fake.Provider
+
+	failLabel   bool
+	failUnlabel bool
+	failAddrs   bool
+}
+
+func (f *flaky) Label(ctx context.Context, ids []string, boxID string) error {
+	if f.failLabel {
+		return errors.New("label: network down")
+	}
+
+	return f.Provider.Label(ctx, ids, boxID)
+}
+
+func (f *flaky) Unlabel(ctx context.Context, ids []string, boxID string) error {
+	if f.failUnlabel {
+		return errors.New("unlabel: network down")
+	}
+
+	return f.Provider.Unlabel(ctx, ids, boxID)
+}
+
+func (f *flaky) Addresses(ctx context.Context) ([]mail.Address, error) {
+	if f.failAddrs {
+		return nil, errors.New("addresses: network down")
+	}
+
+	return f.Provider.Addresses(ctx)
+}
+
+// Screening a sender out has to actually empty the inbox of them: the target
+// label alone would leave every thread sitting in Inbox too. Only Imbox keeps
+// it, because in HEY terms the Imbox is the inbox.
+func TestScreenedOutLeavesTheInbox(t *testing.T) {
+	ctx := context.Background()
+	p, st, cfg := setup(t)
+
+	seed(t, st)
+
+	sc := screener.New(st, p, cfg)
+
+	if _, err := sc.Observe(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := sc.Decide(ctx, "billing@shop.example", screener.ScreenedOut); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+
+	if !has(p.Labelled, "c3:b-out") {
+		t.Errorf("missing label call, got %v", p.Labelled)
+	}
+
+	if !has(p.Unlabelled, "c3:0") {
+		t.Errorf("screened-out mail was left in the inbox: %v", p.Unlabelled)
+	}
+
+	// The Imbox is the inbox, so an Imbox decision must not remove it.
+	if _, err := sc.Decide(ctx, "ada@example.com", screener.Imbox); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+
+	for _, unwanted := range []string{"c1:0", "c2:0"} {
+		if has(p.Unlabelled, unwanted) {
+			t.Errorf("an imbox decision removed the inbox: %v", p.Unlabelled)
+		}
+	}
+}
+
+// Decide only labels the conversations that exist at decision time; mail that
+// arrives later has to be picked up by Reapply, or a decided sender lands
+// back in the inbox forever.
+func TestReapplyRoutesNewMailFromDecidedSender(t *testing.T) {
+	ctx := context.Background()
+	p, st, cfg := setup(t)
+
+	now := time.Now().Truncate(time.Second)
+
+	if err := st.PutConversations(ctx, []mail.Conversation{{
+		ID: "c1", Subject: "Hi", Time: now, NumMessages: 1,
+		Senders: []mail.Address{{Address: "ada@example.com"}},
+		BoxIDs:  []string{"0"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	sc := screener.New(st, p, cfg)
+
+	if _, err := sc.Observe(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := sc.Decide(ctx, "ada@example.com", screener.Imbox); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next sync writes back what Decide did, and brings new mail from the
+	// same sender that carries no screener label yet.
+	if err := st.PutConversations(ctx, []mail.Conversation{
+		{
+			ID: "c1", Subject: "Hi", Time: now, NumMessages: 1,
+			Senders: []mail.Address{{Address: "ada@example.com"}},
+			BoxIDs:  []string{"0", "b-imbox"},
+		},
+		{
+			ID: "c9", Subject: "Hi again", Time: now.Add(time.Hour), NumMessages: 1,
+			Senders: []mail.Address{{Address: "ada@example.com"}},
+			BoxIDs:  []string{"0"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := sc.Reapply(ctx)
+	if err != nil {
+		t.Fatalf("reapply: %v", err)
+	}
+
+	if n != 1 {
+		t.Errorf("reapplied %d conversations, want 1", n)
+	}
+
+	if !has(p.Labelled, "c9:b-imbox") {
+		t.Errorf("new mail was not routed: %v", p.Labelled)
+	}
+
+	if count(p.Labelled, "c1:b-imbox") != 1 {
+		t.Errorf("an already-routed conversation was relabelled: %v", p.Labelled)
+	}
+
+	// Once the sync reflects the routing, Reapply has nothing to do.
+	if err := st.PutConversations(ctx, []mail.Conversation{{
+		ID: "c9", Subject: "Hi again", Time: now.Add(time.Hour), NumMessages: 1,
+		Senders: []mail.Address{{Address: "ada@example.com"}},
+		BoxIDs:  []string{"0", "b-imbox"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	before := len(p.Labelled)
+
+	if n, err := sc.Reapply(ctx); err != nil || n != 0 {
+		t.Errorf("idle reapply did %d conversations, err %v", n, err)
+	}
+
+	if len(p.Labelled) != before {
+		t.Errorf("idle reapply hit the provider: %v", p.Labelled[before:])
+	}
+}
+
+// If the provider refuses the target label, nothing was applied, so nothing
+// may be recorded either: the sender stays pending and retrying is just
+// deciding again.
+func TestDecideProviderFailureLeavesDecisionUncommitted(t *testing.T) {
+	ctx := context.Background()
+	_, st, cfg := setup(t)
+
+	seed(t, st)
+
+	fp := &flaky{Provider: fake.New(), failLabel: true}
+	sc := screener.New(st, fp, cfg)
+
+	if _, err := sc.Observe(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := sc.Decide(ctx, "ada@example.com", screener.Imbox); err == nil {
+		t.Fatal("a failed label call was reported as success")
+	}
+
+	imbox, _ := sc.List(ctx, screener.Imbox, 0)
+	if len(imbox) != 0 {
+		t.Errorf("decision committed despite provider failure: %+v", imbox)
+	}
+
+	pending, _ := sc.Pending(ctx, 0)
+	if len(pending) != 3 {
+		t.Errorf("got %d pending, want the sender still among 3", len(pending))
+	}
+
+	// With the provider back, the retry is a plain re-decide.
+	fp.failLabel = false
+
+	n, err := sc.Decide(ctx, "ada@example.com", screener.Imbox)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+
+	if n != 2 {
+		t.Errorf("retry relabelled %d conversations, want 2", n)
+	}
+}
+
+// When the target label lands but the cleanup half fails, the decision is
+// committed anyway -- the mail is in the right box, just not only there --
+// and the next Reapply pass finishes the job.
+func TestDecidePartialFailureRecoversViaReapply(t *testing.T) {
+	ctx := context.Background()
+	_, st, cfg := setup(t)
+
+	now := time.Now().Truncate(time.Second)
+
+	// A thread previously filed under Feed, being re-decided into the Imbox.
+	if err := st.PutConversations(ctx, []mail.Conversation{{
+		ID: "c1", Subject: "Hi", Time: now, NumMessages: 1,
+		Senders: []mail.Address{{Address: "ada@example.com"}},
+		BoxIDs:  []string{"0", "b-feed"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	fp := &flaky{Provider: fake.New(), failUnlabel: true}
+	sc := screener.New(st, fp, cfg)
+
+	if _, err := sc.Observe(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := sc.Decide(ctx, "ada@example.com", screener.Imbox); err == nil {
+		t.Fatal("a failed cleanup was reported as success")
+	}
+
+	if !has(fp.Labelled, "c1:b-imbox") {
+		t.Fatalf("target label never applied: %v", fp.Labelled)
+	}
+
+	imbox, _ := sc.List(ctx, screener.Imbox, 0)
+	if len(imbox) != 1 {
+		t.Fatalf("decision not committed after the label landed: %+v", imbox)
+	}
+
+	// The provider recovers, and the next sync shows the half-applied truth:
+	// the new label on, the old one still there.
+	fp.failUnlabel = false
+
+	if err := st.PutConversations(ctx, []mail.Conversation{{
+		ID: "c1", Subject: "Hi", Time: now, NumMessages: 1,
+		Senders: []mail.Address{{Address: "ada@example.com"}},
+		BoxIDs:  []string{"0", "b-imbox", "b-feed"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := sc.Reapply(ctx)
+	if err != nil {
+		t.Fatalf("reapply: %v", err)
+	}
+
+	if n != 1 {
+		t.Errorf("reapplied %d conversations, want 1", n)
+	}
+
+	if !has(fp.Unlabelled, "c1:b-feed") {
+		t.Errorf("the stale label was never cleared: %v", fp.Unlabelled)
+	}
+}
+
+// A conversation row and its opened messages describe the same mail; counting
+// both would double every opened thread.
+func TestObserveCountsOpenedThreadsOnce(t *testing.T) {
+	ctx := context.Background()
+	p, st, cfg := setup(t)
+
+	now := time.Now().Truncate(time.Second)
+
+	if err := st.PutConversations(ctx, []mail.Conversation{{
+		ID: "c1", Subject: "Hi", Time: now, NumMessages: 3,
+		Senders: []mail.Address{{Address: "ada@example.com"}},
+		BoxIDs:  []string{"0"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.PutMessages(ctx, []mail.Message{
+		{
+			ID: "m1", ConversationID: "c1", Subject: "Hi", Time: now.Add(-time.Hour),
+			From: mail.Address{Address: "ada@example.com"},
+		},
+		{
+			ID: "m2", ConversationID: "c1", Subject: "Re: Hi", Time: now,
+			From: mail.Address{Address: "ada@example.com"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sc := screener.New(st, p, cfg)
+
+	if _, err := sc.Observe(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, _ := sc.Pending(ctx, 0)
+	if len(pending) != 1 {
+		t.Fatalf("got %d pending, want 1", len(pending))
+	}
+
+	if pending[0].MessageCount != 3 {
+		t.Errorf("message count = %d, want the conversation's 3", pending[0].MessageCount)
+	}
+}
+
+// A transient Addresses failure must fail the pass, not run it with an empty
+// own-address list: that would pour the user's own sent mail into the
+// screener.
+func TestObserveFailsWhenOwnAddressesUnavailable(t *testing.T) {
+	ctx := context.Background()
+	_, st, cfg := setup(t)
+
+	seed(t, st)
+
+	fp := &flaky{Provider: fake.New(), failAddrs: true}
+	sc := screener.New(st, fp, cfg)
+
+	if _, err := sc.Observe(ctx); err == nil {
+		t.Fatal("observe swallowed the addresses error")
+	}
+
+	pending, _ := sc.Pending(ctx, 0)
+	if len(pending) != 0 {
+		t.Errorf("a failed observe still recorded %d senders", len(pending))
+	}
+}
+
+// A rule pointing at the right box with the wrong read-on-arrival flag is not
+// "already routed"; the flag alone must trigger a push.
+func TestRouteNewslettersUpdatesReadFlag(t *testing.T) {
+	ctx := context.Background()
+	p, st, cfg := setup(t)
+
+	seed(t, st)
+
+	if err := st.PutNewsletters(ctx, []mail.Newsletter{{
+		ID: "sub-1", Name: "Weekly",
+		Sender:      mail.Address{Address: "news@list.example"},
+		MoveToBoxID: "b-paper", MarkAsRead: false,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	sc := screener.New(st, p, cfg)
+
+	if _, err := sc.Observe(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := sc.Decide(ctx, "news@list.example", screener.PaperTrail); err != nil {
+		t.Fatal(err)
+	}
+
+	routed, err := sc.RouteNewsletters(ctx)
+	if err != nil {
+		t.Fatalf("route: %v", err)
+	}
+
+	if len(routed) != 1 || routed[0] != "Weekly" {
+		t.Errorf("routed %v, want [Weekly]", routed)
+	}
+
+	if !has(p.Routed, "sub-1:b-paper:true") {
+		t.Errorf("route call wrong: %v", p.Routed)
+	}
+
+	// With box and flag both right, there is nothing left to push.
+	if err := st.PutNewsletters(ctx, []mail.Newsletter{{
+		ID: "sub-1", Name: "Weekly",
+		Sender:      mail.Address{Address: "news@list.example"},
+		MoveToBoxID: "b-paper", MarkAsRead: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if routed, err := sc.RouteNewsletters(ctx); err != nil || len(routed) != 0 {
+		t.Errorf("an already-correct rule was pushed again: %v, err %v", routed, err)
+	}
+}
+
+func count(hay []string, needle string) int {
+	n := 0
+
+	for _, h := range hay {
+		if h == needle {
+			n++
+		}
+	}
+
+	return n
 }

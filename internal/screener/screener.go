@@ -201,13 +201,26 @@ func (s *Screener) BoxIDFor(d Decision) string {
 //
 // The account's own addresses are excluded, or every thread in Sent would put
 // the user into their own screener.
+//
+// Attribution is per exact address: no plus-tag or dot canonicalisation,
+// because on Proton (and SimpleLogin especially) each address is a deliberate
+// identity, and folding them together would merge senders the user keeps
+// apart. A conversation credits senders[0] only, the thread's starter;
+// someone replying into a thread does not pull it under their own decision.
 func (s *Screener) Observe(ctx context.Context) (int, error) {
-	own := make(map[string]bool)
+	// A transient failure here would leave the own-address list empty and
+	// pour the user's every sent thread into their own screener, so it is an
+	// error, not a shrug: skipping the pass costs nothing, the next one
+	// catches up.
+	addrs, err := s.provider.Addresses(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("own addresses: %w", err)
+	}
 
-	if addrs, err := s.provider.Addresses(ctx); err == nil {
-		for _, a := range addrs {
-			own[strings.ToLower(a.Address)] = true
-		}
+	own := make(map[string]bool, len(addrs))
+
+	for _, a := range addrs {
+		own[strings.ToLower(a.Address)] = true
 	}
 
 	rows, err := s.store.DB().QueryContext(ctx, `
@@ -231,7 +244,15 @@ func (s *Screener) Observe(ctx context.Context) (int, error) {
 			SELECT lower(json_extract(from_addr, '$.address')),
 			       COALESCE(json_extract(from_addr, '$.name'), ''),
 			       time,
-			       1,
+			       -- A message whose conversation is cached under the same
+			       -- sender is already inside that row's num_messages;
+			       -- counting it again would double every opened thread.
+			       CASE WHEN EXISTS (
+			           SELECT 1 FROM conversations c
+			           WHERE c.id = messages.conversation_id
+			             AND lower(json_extract(c.senders, '$[0].address')) =
+			                 lower(json_extract(messages.from_addr, '$.address'))
+			       ) THEN 0 ELSE 1 END,
 			       newsletter_id
 			FROM messages
 			WHERE is_draft = 0 AND json_extract(from_addr, '$.address') IS NOT NULL
@@ -389,8 +410,21 @@ func (s *Screener) list(ctx context.Context, decision string, limit int) ([]Send
 	return out, rows.Err()
 }
 
+// inboxBoxID is the provider's system inbox. Proton numbers it "0"; like the
+// category IDs Suggest reads, it is a provider constant the mail interface
+// does not model.
+const inboxBoxID = protonapi.InboxLabel
+
 // Decide records a decision for a sender and applies it to their existing
 // mail. Returns the number of conversations relabelled.
+//
+// The provider is written first and the decision committed after, so a
+// network failure cannot leave the cache claiming a routing the mailbox never
+// saw: if the target label is refused, nothing is recorded, the sender stays
+// pending, and retrying is just deciding again. Once the label has landed the
+// decision is committed even if the cleanup half fails afterwards; the mail
+// is in the right box, just not only there, the error says so, and the next
+// Reapply pass clears the leftovers.
 func (s *Screener) Decide(ctx context.Context, address string, d Decision) (int, error) {
 	if !d.Valid() {
 		return 0, fmt.Errorf("unknown decision %q", d)
@@ -401,44 +435,74 @@ func (s *Screener) Decide(ctx context.Context, address string, d Decision) (int,
 		return 0, fmt.Errorf("empty sender address")
 	}
 
+	var ids []string
+
+	routing := s.cfg.Enabled && s.cfg.Configured() && s.BoxIDFor(d) != ""
+
+	if routing {
+		var err error
+
+		ids, err = s.conversationsFrom(ctx, address)
+		if err != nil {
+			return 0, err
+		}
+
+		if len(ids) > 0 {
+			if err := s.provider.Label(ctx, ids, s.BoxIDFor(d)); err != nil {
+				return 0, fmt.Errorf("apply %s label: %w", d, err)
+			}
+		}
+	}
+
+	if err := s.recordDecision(ctx, address, d); err != nil {
+		return len(ids), err
+	}
+
+	if len(ids) > 0 {
+		if err := s.clearOtherBoxes(ctx, ids, d); err != nil {
+			return len(ids), fmt.Errorf(
+				"decision recorded and %s applied, but old labels remain (the next reapply pass clears them): %w",
+				d, err)
+		}
+	}
+
+	return len(ids), nil
+}
+
+// recordDecision writes the decision row, creating the sender when the
+// screener has never seen them, e.g. a rule the user is setting up in
+// advance.
+func (s *Screener) recordDecision(ctx context.Context, address string, d Decision) error {
 	now := time.Now().Unix()
 
 	res, err := s.store.DB().ExecContext(ctx,
 		`UPDATE senders SET decision = ?, decided_at = ? WHERE lower(address) = ?`,
 		string(d), now, address)
 	if err != nil {
-		return 0, fmt.Errorf("record decision: %w", err)
+		return fmt.Errorf("record decision: %w", err)
 	}
 
 	if n, _ := res.RowsAffected(); n == 0 {
-		// A decision can be made for a sender we have not seen yet, e.g. from
-		// a rule the user is setting up in advance.
 		if _, err := s.store.DB().ExecContext(ctx,
 			`INSERT INTO senders (address, decision, decided_at, first_seen, last_seen)
 			 VALUES (?, ?, ?, ?, ?)`, address, string(d), now, now, now); err != nil {
-			return 0, fmt.Errorf("record decision: %w", err)
+			return fmt.Errorf("record decision: %w", err)
 		}
 	}
 
-	if !s.cfg.Enabled || !s.cfg.Configured() {
-		return 0, nil
-	}
-
-	return s.applyToSender(ctx, address, d)
+	return nil
 }
 
-// applyToSender relabels every cached conversation from an address.
+// conversationsFrom lists every cached conversation from an address.
 //
 // Conversations are matched directly as well as through messages: the cache is
 // warm, not a mirror, so message rows exist only for threads that have been
 // opened. Matching on messages alone would silently label nothing on a freshly
 // synced mailbox.
-func (s *Screener) applyToSender(ctx context.Context, address string, d Decision) (int, error) {
-	boxID := s.BoxIDFor(d)
-	if boxID == "" {
-		return 0, nil
-	}
-
+//
+// Matching is by exact address, on purpose: see Observe for why nothing is
+// canonicalised and why a conversation belongs to senders[0].
+func (s *Screener) conversationsFrom(ctx context.Context, address string) ([]string, error) {
 	rows, err := s.store.DB().QueryContext(ctx, `
 		SELECT DISTINCT id FROM (
 			SELECT id FROM conversations
@@ -452,7 +516,7 @@ func (s *Screener) applyToSender(ctx context.Context, address string, d Decision
 		)
 		WHERE id IS NOT NULL AND id <> ''`, address, address)
 	if err != nil {
-		return 0, fmt.Errorf("find conversations for %s: %w", address, err)
+		return nil, fmt.Errorf("find conversations for %s: %w", address, err)
 	}
 	defer rows.Close()
 
@@ -461,26 +525,23 @@ func (s *Screener) applyToSender(ctx context.Context, address string, d Decision
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return 0, err
+			return nil, err
 		}
 
 		ids = append(ids, id)
 	}
 
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
+	return ids, rows.Err()
+}
 
-	if len(ids) == 0 {
-		return 0, nil
-	}
-
-	if err := s.provider.Label(ctx, ids, boxID); err != nil {
-		return 0, fmt.Errorf("apply %s label: %w", d, err)
-	}
-
-	// Remove the other screener labels so a re-decision does not leave a
-	// conversation in two boxes at once.
+// clearOtherBoxes removes every screener label except the decision's own, so
+// a re-decision does not leave a conversation in two boxes at once.
+//
+// It also takes the conversations out of the system inbox for everything but
+// Imbox. This mirrors HEY, where the Imbox *is* the inbox: Feed and Paper
+// Trail are places mail moves to, and Screened Out mail was never wanted, so
+// none of them should keep a copy sitting in Inbox.
+func (s *Screener) clearOtherBoxes(ctx context.Context, ids []string, d Decision) error {
 	for _, other := range []Decision{Imbox, Feed, PaperTrail, ScreenedOut} {
 		if other == d {
 			continue
@@ -488,12 +549,124 @@ func (s *Screener) applyToSender(ctx context.Context, address string, d Decision
 
 		if id := s.BoxIDFor(other); id != "" {
 			if err := s.provider.Unlabel(ctx, ids, id); err != nil {
-				return len(ids), fmt.Errorf("clear %s label: %w", other, err)
+				return fmt.Errorf("clear %s label: %w", other, err)
 			}
 		}
 	}
 
-	return len(ids), nil
+	if d != Imbox {
+		if err := s.provider.Unlabel(ctx, ids, inboxBoxID); err != nil {
+			return fmt.Errorf("clear inbox: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Reapply routes mail that arrived after its sender was decided.
+//
+// Decide labels the conversations that exist at the moment of decision and
+// nothing afterwards, so without this pass a decided sender's next thread
+// would sit in Inbox forever. Reapply finds cached conversations from decided
+// senders that the last sync says are not labelled per their decision --
+// missing the target box, carrying another screener box, or (for anything but
+// Imbox) still in the system inbox -- and applies the same routing Decide
+// does.
+//
+// It reads the box membership sync wrote, so it is meant to run after every
+// sync: idempotent, and a single local query when there is nothing to do. It
+// is also the recovery path for a Decide that failed after its target label
+// landed, whose error says as much. Returns the conversations re-routed.
+func (s *Screener) Reapply(ctx context.Context) (int, error) {
+	if !s.cfg.Enabled || !s.cfg.Configured() {
+		return 0, nil
+	}
+
+	// The decision's own box, usable wherever the senders table is in scope.
+	const boxCase = `CASE s.decision
+		WHEN 'imbox' THEN ? WHEN 'feed' THEN ? WHEN 'paper_trail' THEN ? ELSE ? END`
+
+	boxes := []any{s.cfg.ImboxID, s.cfg.FeedID, s.cfg.PaperTrailID, s.cfg.ScreenedOutID}
+
+	var args []any
+	args = append(args, boxes...) // first boxCase
+	args = append(args, boxes...) // IN (...)
+	args = append(args, boxes...) // second boxCase
+	args = append(args, inboxBoxID)
+
+	rows, err := s.store.DB().QueryContext(ctx, `
+		SELECT DISTINCT s.decision, c.id
+		FROM senders s
+		JOIN (
+			SELECT lower(json_extract(senders, '$[0].address')) AS addr, id
+			FROM conversations
+			WHERE json_extract(senders, '$[0].address') IS NOT NULL
+
+			UNION
+
+			SELECT lower(json_extract(from_addr, '$.address')), conversation_id
+			FROM messages
+			WHERE is_draft = 0 AND conversation_id <> ''
+			  AND json_extract(from_addr, '$.address') IS NOT NULL
+		) m ON m.addr = s.address
+		JOIN conversations c ON c.id = m.id
+		WHERE s.decision IN ('imbox', 'feed', 'paper_trail', 'screened_out')
+		  AND (
+			NOT EXISTS (
+				SELECT 1 FROM conversation_boxes cb
+				WHERE cb.conversation_id = c.id AND cb.box_id = `+boxCase+`)
+			OR EXISTS (
+				SELECT 1 FROM conversation_boxes cb
+				WHERE cb.conversation_id = c.id
+				  AND cb.box_id IN (?, ?, ?, ?)
+				  AND cb.box_id <> `+boxCase+`)
+			OR (s.decision <> 'imbox' AND EXISTS (
+				SELECT 1 FROM conversation_boxes cb
+				WHERE cb.conversation_id = c.id AND cb.box_id = ?))
+		  )`, args...)
+	if err != nil {
+		return 0, fmt.Errorf("find unrouted conversations: %w", err)
+	}
+	defer rows.Close()
+
+	byDecision := make(map[Decision][]string)
+
+	for rows.Next() {
+		var dec, id string
+
+		if err := rows.Scan(&dec, &id); err != nil {
+			return 0, err
+		}
+
+		byDecision[Decision(dec)] = append(byDecision[Decision(dec)], id)
+	}
+
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	total := 0
+
+	for _, d := range []Decision{Imbox, Feed, PaperTrail, ScreenedOut} {
+		ids := byDecision[d]
+		if len(ids) == 0 {
+			continue
+		}
+
+		sort.Strings(ids)
+
+		if err := s.provider.Label(ctx, ids, s.BoxIDFor(d)); err != nil {
+			return total, fmt.Errorf("apply %s label: %w", d, err)
+		}
+
+		if err := s.clearOtherBoxes(ctx, ids, d); err != nil {
+			return total, err
+		}
+
+		total += len(ids)
+	}
+
+	return total, nil
 }
 
 // Suggest proposes a decision for a sender that has none, using the signals
@@ -614,13 +787,15 @@ func (s *Screener) RouteNewsletters(ctx context.Context) ([]string, error) {
 			continue
 		}
 
-		// Already routed where we want it.
-		if n.MoveToBoxID == boxID {
-			continue
-		}
-
 		// Paper Trail is read-and-forget, so mark it read on arrival.
 		markRead := sn.Decision == PaperTrail
+
+		// Already routed exactly as wanted. The read flag is part of that: a
+		// rule pointing at the right box but leaving Paper Trail unread, say
+		// one set by hand in the web client, still needs pushing.
+		if n.MoveToBoxID == boxID && n.MarkAsRead == markRead {
+			continue
+		}
 
 		if err := s.provider.RouteNewsletter(ctx, n.ID, boxID, markRead); err != nil {
 			if err == mail.ErrNotSupported {
