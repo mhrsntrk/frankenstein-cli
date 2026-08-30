@@ -107,11 +107,13 @@ func (m *Model) composerMouse(msg tea.MouseMsg) (bool, tea.Model, tea.Cmd) {
 
 	case "send":
 		// A send already in flight owns the draft; a second click while it
-		// runs would deliver the mail twice.
-		if m.loading {
+		// runs would deliver the mail twice. The composer's own flag, not the
+		// model's: a background sync must not make the button dead.
+		if m.compose.sending {
 			return true, m, nil
 		}
 
+		m.compose.sending = true
 		m.loading = true
 
 		return true, m, m.sendCompose(true)

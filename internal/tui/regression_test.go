@@ -568,3 +568,97 @@ func TestComposerOverlayNeverWidensTheFrame(t *testing.T) {
 		}
 	}
 }
+
+// Mail opens on the mail. The box list is somewhere to go when the bar does
+// not have the box you want, not the screen the tool starts on.
+func TestMailOpensOnTheInboxThreadList(t *testing.T) {
+	h := newHarness(t)
+
+	// A fresh model, as Run would build it, before any box has arrived.
+	h.m.view = viewThreads
+	h.m.box = mail.Box{}
+
+	if h.m.view != viewThreads {
+		t.Fatalf("opening view = %v, want viewThreads", h.m.view)
+	}
+
+	// The boxes landing is what picks the box the list is of.
+	h.drain(t, h.m.loadBoxes())
+
+	if h.m.box.Name != "Inbox" {
+		t.Errorf("opened on box %q, want Inbox", h.m.box.Name)
+	}
+
+	if h.m.view != viewThreads {
+		t.Errorf("view after boxes = %v, want viewThreads", h.m.view)
+	}
+
+	// esc still reaches the full box list, which is where the screener's own
+	// boxes live now that they are off the bar.
+	h.press(t, "esc")
+
+	if h.m.view != viewBoxes {
+		t.Errorf("esc gave view %v, want viewBoxes", h.m.view)
+	}
+}
+
+// Tab away and back returns to the box that was open, rather than starting
+// over at the list of boxes.
+func TestReturningToMailKeepsTheOpenBox(t *testing.T) {
+	h := newHarness(t)
+
+	h.press(t, "2") // Starred
+
+	if h.m.box.Name != "Starred" {
+		t.Fatalf("box = %q, want Starred", h.m.box.Name)
+	}
+
+	h.press(t, "tab") // Calendar
+	h.press(t, "tab") // Notes
+	h.press(t, "tab") // back to Mail
+
+	if h.m.section != sectionMail {
+		t.Fatalf("section = %v, want mail", h.m.section)
+	}
+
+	if h.m.view != viewThreads {
+		t.Errorf("view = %v, want viewThreads", h.m.view)
+	}
+
+	if h.m.box.Name != "Starred" {
+		t.Errorf("box = %q, want the Starred box still open", h.m.box.Name)
+	}
+}
+
+// The send guard belongs to the composer, not to the model: a sync in the
+// background sets m.loading, and that must not leave the composer unable to
+// send the mail the user has written.
+func TestBackgroundLoadingDoesNotBlockSending(t *testing.T) {
+	h := newHarness(t)
+
+	h.press(t, "c")
+	h.m.compose.to.SetValue("someone@example.com")
+	h.m.compose.subject.SetValue("hello")
+
+	// Something else is in flight, as it is whenever a sync is running.
+	h.m.loading = true
+
+	_, cmd := h.m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	if cmd == nil {
+		t.Fatal("the send was refused while an unrelated load was in flight")
+	}
+
+	h.drain(t, cmd)
+
+	sent := false
+
+	for _, c := range h.p.Calls {
+		if c == "Send" {
+			sent = true
+		}
+	}
+
+	if !sent {
+		t.Error("nothing was sent")
+	}
+}

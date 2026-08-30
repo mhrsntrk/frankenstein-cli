@@ -144,6 +144,12 @@ type composeState struct {
 	// Saving again with an ID updates that draft rather than creating a new
 	// one, which is what Provider.Draft documents for a non-empty ID.
 	draftID string
+
+	// sending is true while a send or a save is in flight, so holding the
+	// chord cannot deliver the same mail twice. It belongs to the composer
+	// rather than the model: a background sync sets m.loading as well, and
+	// that must not leave the composer refusing to send.
+	sending bool
 }
 
 // Model is the whole application state.
@@ -356,7 +362,12 @@ func New(
 		moveFilter:     move,
 		list:           heyui.NewList(),
 		calView:        calendarWeek,
-		status:         "loading",
+
+		// Mail opens on the mail itself. The box list is a place to go when
+		// the bar does not have the box you want, not the front door.
+		view:    viewThreads,
+		loading: true,
+		status:  "loading",
 	}
 }
 
@@ -408,6 +419,20 @@ func (m *Model) targets() []string {
 	}
 
 	return nil
+}
+
+// defaultBox is the box the mail section opens on: the Inbox, or the first
+// box on the bar for an account that somehow has no box by that name.
+func (m *Model) defaultBox() (mail.Box, bool) {
+	if box, ok := m.boxByName("Inbox"); ok {
+		return box, true
+	}
+
+	if len(m.quickBoxes) > 0 {
+		return m.quickBoxes[0], true
+	}
+
+	return mail.Box{}, false
 }
 
 // boxByName finds a cached box by exact name, which is how the TUI refers to

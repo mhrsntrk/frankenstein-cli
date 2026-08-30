@@ -44,6 +44,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.boxes = msg
 		m.quickBoxes = pickQuickBoxes(msg)
 
+		// The first boxes to arrive are what the opening thread list is of:
+		// until they do there is no box to ask for. Only when nothing has been
+		// chosen yet, so a later refresh cannot pull the reader out of the box
+		// they are in.
+		if m.box.ID == "" {
+			if box, ok := m.defaultBox(); ok {
+				m.box = box
+
+				if m.view == viewThreads {
+					m.loading = true
+
+					return m, m.loadConvs(m.listBoxID(), "")
+				}
+			}
+		}
+
 		return m, nil
 
 	case chromeMsg:
@@ -292,6 +308,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.notify(msg.note)
 		m.list.ClearSelection()
 
+		if m.compose != nil {
+			m.compose.sending = false
+		}
+
 		var cmds []tea.Cmd
 
 		if msg.reload {
@@ -358,6 +378,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.err = msg.err
 		m.loading = false
+
+		// A send that failed releases the composer, or the chord that would
+		// retry it stays inert and the draft is stuck on screen.
+		if m.compose != nil {
+			m.compose.sending = false
+		}
 
 		return m, nil
 
@@ -850,9 +876,22 @@ func (m *Model) enterSection() tea.Cmd {
 
 		return m.loadNotes()
 	default:
-		m.view = viewBoxes
+		// Coming back to Mail returns to the box that was open, not to the
+		// list of boxes: tab is for switching sections, not for starting over.
+		m.view = viewThreads
 
-		return m.loadBoxes()
+		if m.box.ID == "" {
+			box, ok := m.defaultBox()
+			if !ok {
+				return m.loadBoxes()
+			}
+
+			m.box = box
+		}
+
+		m.loading = true
+
+		return tea.Batch(m.loadConvs(m.listBoxID(), m.filter.Value()), m.loadBoxes())
 	}
 }
 
@@ -1190,11 +1229,13 @@ func (m *Model) handleComposeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+s":
 		// A save already in flight owns the draft; a second one would race it
-		// and create a duplicate.
-		if m.loading {
+		// and create a duplicate. The flag is the composer's own rather than
+		// the model's: a background sync must not make the composer inert.
+		if c.sending {
 			return m, nil
 		}
 
+		c.sending = true
 		m.loading = true
 
 		return m, m.sendCompose(false)
@@ -1204,10 +1245,11 @@ func (m *Model) handleComposeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// a newline in the body, and an accidental send cannot be undone.
 		// While a send is in flight the chord is inert, or holding it would
 		// deliver the mail twice.
-		if m.loading {
+		if c.sending {
 			return m, nil
 		}
 
+		c.sending = true
 		m.loading = true
 
 		return m, m.sendCompose(true)
