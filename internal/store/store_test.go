@@ -546,7 +546,7 @@ func TestMigrateFromV0(t *testing.T) {
 		    box_ids         TEXT NOT NULL DEFAULT '[]',
 		    sort_order      INTEGER NOT NULL DEFAULT 0
 		);
-		INSERT INTO conversations (id, subject) VALUES ('c1', 'kept');
+		INSERT INTO conversations (id, subject, time) VALUES ('c1', 'kept', 1756000000);
 		INSERT INTO messages (id, conversation_id) VALUES
 		    ('m1', 'c1'),
 		    ('m2', 'ghost'),
@@ -612,4 +612,64 @@ func contains(hay []string, needle string) bool {
 	}
 
 	return false
+}
+
+// A conversation cached from a listing before the Context* fallback existed
+// has no time and no box, so no box lists it and a newest-first list sorts it
+// below everything. The migration drops those rather than leaving them to
+// haunt the cache.
+func TestMigrateDropsBoxlessUndatedConversations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache.db")
+
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+
+	// One good row and one of the broken ones, written behind the store's
+	// back so the migration is what has to clean it up.
+	if err := st.PutConversations(ctx, []mail.Conversation{
+		{ID: "good", Subject: "dated", Time: time.Now(), BoxIDs: []string{"0"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := st.DB().ExecContext(ctx,
+		`INSERT INTO conversations (id, subject, time) VALUES ('broken', 'undated', 0)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rewind the stamp so the step runs again on reopen.
+	if _, err := st.DB().ExecContext(ctx, `PRAGMA user_version = 2`); err != nil {
+		t.Fatal(err)
+	}
+
+	st.Close()
+
+	st, err = store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	var n int
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM conversations WHERE id = 'broken'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+
+	if n != 0 {
+		t.Error("the boxless undated conversation survived the migration")
+	}
+
+	if err := st.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM conversations WHERE id = 'good'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+
+	if n != 1 {
+		t.Error("the migration took a good conversation with it")
+	}
 }

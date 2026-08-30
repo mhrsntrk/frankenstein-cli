@@ -105,12 +105,18 @@ func categoryBoxes() []fmail.Box {
 }
 
 func toConversation(c protonapi.Conversation) fmail.Conversation {
-	// Always the global rollups, never the Context* ones scoped to the label
-	// a listing was made under. Everything this conversion feeds ends up in
-	// the cache, which holds one row per thread: a box-scoped count written
-	// there would show up in every other box the thread appears in, drifting
-	// unread counts and times on any replied thread.
-	return fmail.Conversation{
+	// The global rollups are preferred over the Context* ones scoped to the
+	// label a listing was made under: everything this conversion feeds ends
+	// up in the cache, which holds one row per thread, so a box-scoped count
+	// written there would show up in every other box the thread appears in
+	// and drift the unread counts on any replied thread.
+	//
+	// The Context* fields are still the fallback, because preferring the
+	// global ones is not the same as having them. Proton's conversation
+	// *listing* leaves Time at zero and populates ContextTime alone, and a
+	// thread cached with no time sorts below every dated one — which is to
+	// say it never appears at all in a newest-first list.
+	conv := fmail.Conversation{
 		ID:             c.ID,
 		Subject:        c.Subject,
 		Senders:        toAPIAddresses(c.Senders),
@@ -124,6 +130,32 @@ func toConversation(c protonapi.Conversation) fmail.Conversation {
 		CategoryID:     c.CategoryID,
 		Order:          c.Order,
 	}
+
+	if c.Time == 0 && c.ContextTime > 0 {
+		conv.Time = time.Unix(c.ContextTime, 0)
+	}
+
+	if c.NumMessages == 0 && c.ContextNumMessages > 0 {
+		conv.NumMessages = c.ContextNumMessages
+		conv.NumUnread = c.ContextNumUnread
+		conv.NumAttachments = c.ContextNumAttachments
+	}
+
+	if c.Size == 0 {
+		conv.Size = c.ContextSize
+	}
+
+	// Same story for the labels: the listing carries them as Labels objects
+	// and leaves LabelIDs empty, and a thread cached with no box membership
+	// is in no box, so no box lists it.
+	if len(conv.BoxIDs) == 0 && len(c.Labels) > 0 {
+		conv.BoxIDs = make([]string, 0, len(c.Labels))
+		for _, l := range c.Labels {
+			conv.BoxIDs = append(conv.BoxIDs, l.ID)
+		}
+	}
+
+	return conv
 }
 
 func toMessage(m protonapi.Message) fmail.Message {

@@ -80,6 +80,17 @@ var migrations = []func(*sql.Tx) error{
 
 		return err
 	},
+	// v3: conversations cached from a listing before the Context* fallback
+	// existed have no time and no box membership, which puts them in no box
+	// and below every dated row. They are unreachable rather than merely
+	// wrong, so they are dropped and left for the next sync to refetch.
+	func(tx *sql.Tx) error {
+		_, err := tx.Exec(`DELETE FROM conversations
+			WHERE time = 0
+			  AND id NOT IN (SELECT conversation_id FROM conversation_boxes)`)
+
+		return err
+	},
 }
 
 // migrate brings the database to the current schema: the base schema first
