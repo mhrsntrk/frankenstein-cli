@@ -217,6 +217,8 @@ func (m *Model) click(x, y int) (tea.Model, tea.Cmd) {
 		return m.clickSubnav(col)
 	case y == rows.boxes && rows.boxes >= 0:
 		return m.clickBoxes(col)
+	case y == rows.categories && rows.categories >= 0:
+		return m.clickCategories(col)
 	case y == rows.banner && rows.banner >= 0:
 		m.push(viewScreener)
 		m.loading = true
@@ -244,13 +246,18 @@ type chromeRows struct {
 	// calendar view.
 	subnav int
 
-	boxes  int
+	boxes int
+
+	// categories is the inbox category row, drawn only under the box bar and
+	// only where a category means anything.
+	categories int
+
 	banner int
 	body   int
 }
 
 func (m *Model) chromeRows() chromeRows {
-	out := chromeRows{nav: -1, subnav: -1, boxes: -1, banner: -1}
+	out := chromeRows{nav: -1, subnav: -1, boxes: -1, categories: -1, banner: -1}
 
 	lines := strings.Split(m.header(), "\n")
 
@@ -277,6 +284,11 @@ func (m *Model) chromeRows() chromeRows {
 	if m.mailChrome() {
 		if m.chromeLevel < chromeNoBoxBar && len(m.quickBoxes) > 0 {
 			out.boxes = row
+			row++
+		}
+
+		if m.chromeLevel < chromeNoBoxBar && m.categoryRowShown() {
+			out.categories = row
 			row++
 		}
 
@@ -342,6 +354,27 @@ func (m *Model) clickBoxes(col int) (tea.Model, tea.Cmd) {
 	m.resetMailContext()
 
 	return m, m.loadConvs(m.box.ID, "")
+}
+
+// clickCategories narrows the Inbox from the sub-row under the bar, doing what
+// [ and ] do. The leading All entry is index 0, so the category it picks is one
+// place further along than the entry that was hit.
+func (m *Model) clickCategories(col int) (tea.Model, tea.Cmd) {
+	cats := m.categoryBoxes()
+
+	labels := make([]string, 0, len(cats)+1)
+	labels = append(labels, categoryAllLabel)
+
+	for _, b := range cats {
+		labels = append(labels, b.Name)
+	}
+
+	i, ok := hitLabel(m.header(), m.chromeRows().categories, labels, col)
+	if !ok {
+		return m, nil
+	}
+
+	return m.selectCategory(i - 1)
 }
 
 // hitLabel finds which of labels was clicked on a rendered row.

@@ -282,8 +282,14 @@ type Model struct {
 	filtering bool
 
 	quickBoxes []mail.Box
-	pending    int
-	account    string
+
+	// categoryID is the inbox category the listing is narrowed to, empty for
+	// all of it. It is a filter rather than a location: m.box stays the Inbox
+	// while one is picked, so the header and the box bar keep saying so.
+	categoryID string
+
+	pending int
+	account string
 
 	width, height int
 
@@ -416,6 +422,65 @@ func (m *Model) boxByName(name string) (mail.Box, bool) {
 	return mail.Box{}, false
 }
 
+// categoryAllLabel names the entry that clears the category filter. It leads
+// the row, and is what the click map looks for, so it is written once.
+const categoryAllLabel = "All"
+
+// categoryOrder is the order the inbox categories are offered in.
+//
+// They are matched by name because the build forbids this package importing
+// the provider's label IDs, so the ordering cannot be written as a list of
+// them; the provider stamps mail.BoxCategory on each one on the way through.
+var categoryOrder = []string{
+	"Primary", "Social", "Promotions", "Newsletters", "Updates", "Forums",
+}
+
+// categoryBoxes are the account's inbox categories, in categoryOrder. One this
+// list does not name is appended rather than dropped, so a category the
+// provider starts sending still reaches the row.
+func (m *Model) categoryBoxes() []mail.Box {
+	out := make([]mail.Box, 0, len(categoryOrder))
+	taken := make(map[string]bool, len(categoryOrder))
+
+	for _, name := range categoryOrder {
+		for _, b := range m.boxes {
+			if b.Kind == mail.BoxCategory && b.Name == name {
+				out = append(out, b)
+				taken[b.ID] = true
+
+				break
+			}
+		}
+	}
+
+	for _, b := range m.boxes {
+		if b.Kind == mail.BoxCategory && !taken[b.ID] {
+			out = append(out, b)
+		}
+	}
+
+	return out
+}
+
+// categoryRowShown reports whether the category sub-row belongs on screen. A
+// category narrows one listing, so it is only offered where that listing is
+// what is being read: the Inbox's own threads.
+func (m *Model) categoryRowShown() bool {
+	return m.mailChrome() && m.boxActive() &&
+		m.box.Name == "Inbox" && len(m.categoryBoxes()) > 0
+}
+
+// listBoxID is what the thread list is listed by. Proton models the categories
+// as labels on the same conversations, so narrowing to one is listing by its
+// ID; the box itself is what is listed the rest of the time.
+func (m *Model) listBoxID() string {
+	if m.categoryID != "" {
+		return m.categoryID
+	}
+
+	return m.box.ID
+}
+
 // inMailContext reports whether what is on screen is still the mail section:
 // one of the mail views, or the composer floating over them. A thread or body
 // that lands outside this context is stored but must not adopt the view, or a
@@ -428,6 +493,10 @@ func (m *Model) inMailContext() bool {
 // thread and body would otherwise linger in the split view's right pane, and
 // the old cursor position is meaningless against a new listing.
 func (m *Model) resetMailContext() {
+	// The category narrows one box's listing, so it cannot outlive a move to
+	// another box or a new search. Picking a category sets it again after.
+	m.categoryID = ""
+
 	m.thread = mail.Thread{}
 	m.body = mail.Body{}
 	m.bodyLines = nil

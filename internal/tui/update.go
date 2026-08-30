@@ -10,7 +10,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
-	"github.com/mhrsntrk/frankenstein-cli/internal/config"
 	fmail "github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
 	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
@@ -43,7 +42,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case boxesMsg:
 		m.boxes = msg
-		m.quickBoxes = pickQuickBoxes(msg, m.cfg.Screener)
+		m.quickBoxes = pickQuickBoxes(msg)
 
 		return m, nil
 
@@ -276,7 +275,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		cmds := []tea.Cmd{m.loadBoxes(), m.loadChrome()}
 		if m.view == viewThreads {
-			cmds = append(cmds, m.loadConvs(m.box.ID, m.filter.Value()))
+			cmds = append(cmds, m.loadConvs(m.listBoxID(), m.filter.Value()))
 		}
 
 		// A screening decision is about a person, so mail that arrived after
@@ -296,7 +295,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmds []tea.Cmd
 
 		if msg.reload {
-			cmds = append(cmds, m.loadConvs(m.box.ID, m.filter.Value()), m.loadBoxes(), m.loadChrome())
+			cmds = append(cmds, m.loadConvs(m.listBoxID(), m.filter.Value()), m.loadBoxes(), m.loadChrome())
 		}
 
 		if msg.rescreen {
@@ -619,6 +618,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, nil
+
+	case "]":
+		return m.cycleCategory(1)
+
+	case "[":
+		return m.cycleCategory(-1)
 	}
 
 	// 1-9 jump straight to a box, which is what keeps every box one keystroke
@@ -640,6 +645,58 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// selectCategory narrows the listing to one category, or to all of it for an
+// index outside the row.
+//
+// The box is left alone on purpose: a category is a label over the same
+// conversations, so listing by its ID is the filter, and m.box staying the
+// Inbox is what keeps the header and the bar naming where the reader is.
+func (m *Model) selectCategory(i int) (tea.Model, tea.Cmd) {
+	cats := m.categoryBoxes()
+
+	id := ""
+	if i >= 0 && i < len(cats) {
+		id = cats[i].ID
+	}
+
+	m.view = viewThreads
+	m.loading = true
+	m.list.ClearSelection()
+
+	// resetMailContext drops the category along with the rest of the previous
+	// listing, so the new one is set after it rather than before.
+	m.resetMailContext()
+	m.categoryID = id
+
+	return m, m.loadConvs(m.listBoxID(), m.filter.Value())
+}
+
+// cycleCategory steps along the category row and wraps, All included. The row
+// is a sub-nav of the Inbox, so the keys are dead anywhere the row is not.
+func (m *Model) cycleCategory(delta int) (tea.Model, tea.Cmd) {
+	if !m.categoryRowShown() {
+		return m, nil
+	}
+
+	cats := m.categoryBoxes()
+
+	// Entry 0 is All, so category i sits at i+1.
+	at := 0
+
+	for i, b := range cats {
+		if b.ID == m.categoryID {
+			at = i + 1
+
+			break
+		}
+	}
+
+	n := len(cats) + 1
+	next := ((at+delta)%n + n) % n
+
+	return m.selectCategory(next - 1)
 }
 
 // calendarKey handles the keys that only mean something in the calendar.
@@ -1466,23 +1523,18 @@ func (m *Model) setCursor(i int) {
 	}
 }
 
-// pickQuickBoxes chooses what the number keys bind to: the screener's boxes
-// first, then the system boxes a person actually reads.
-func pickQuickBoxes(boxes []fmail.Box, sc config.ScreenerConfig) []fmail.Box {
-	byID := make(map[string]fmail.Box, len(boxes))
-	for _, b := range boxes {
-		byID[b.ID] = b
-	}
-
+// pickQuickBoxes chooses what the number keys bind to: the system boxes, in
+// the order every other mail client puts them in.
+//
+// The screener's own boxes are deliberately absent. The bar says where mail
+// lives, and the Imbox, the Feed and the Paper Trail are not places mail rests
+// in this account: they are a queue you visit to decide about a sender. They
+// stay one keystroke away through ctrl+s, and one screen away in the full box
+// list, which is where a box that is not a destination belongs.
+func pickQuickBoxes(boxes []fmail.Box) []fmail.Box {
 	var out []fmail.Box
 
-	for _, id := range []string{sc.ImboxID, sc.FeedID, sc.PaperTrailID, sc.ScreenedOutID} {
-		if b, ok := byID[id]; ok && id != "" {
-			out = append(out, b)
-		}
-	}
-
-	for _, name := range []string{"Inbox", "Starred", "Archive", "Sent", "Drafts"} {
+	for _, name := range []string{"Inbox", "Starred", "Archive", "Sent", "Drafts", "Spam", "Trash"} {
 		for _, b := range boxes {
 			if b.Kind == fmail.BoxSystem && b.Name == name {
 				out = append(out, b)

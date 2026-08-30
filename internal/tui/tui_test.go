@@ -45,6 +45,8 @@ func newHarness(t *testing.T) *harness {
 	p.Boxen = []mail.Box{
 		{ID: "0", Name: "Inbox", Kind: mail.BoxSystem, Total: 4, Unread: 2},
 		{ID: "6", Name: "Archive", Kind: mail.BoxSystem},
+		{ID: "7", Name: "Sent", Kind: mail.BoxSystem},
+		{ID: "8", Name: "Drafts", Kind: mail.BoxSystem},
 		{ID: "3", Name: "Trash", Kind: mail.BoxSystem},
 		{ID: "4", Name: "Spam", Kind: mail.BoxSystem},
 		{ID: "10", Name: "Starred", Kind: mail.BoxSystem},
@@ -124,7 +126,7 @@ func newHarness(t *testing.T) *harness {
 
 	m.width, m.height = 100, 30
 	m.boxes = p.Boxen
-	m.quickBoxes = pickQuickBoxes(p.Boxen, cfg.Screener)
+	m.quickBoxes = pickQuickBoxes(p.Boxen)
 	m.setPostings(convs)
 	m.view = viewThreads
 	m.box = p.Boxen[0]
@@ -238,19 +240,222 @@ func TestNavigationDrillsInAndBack(t *testing.T) {
 func TestNumberKeysJumpToBox(t *testing.T) {
 	h := newHarness(t)
 
-	// The screener's boxes take the first slots.
-	if len(h.m.quickBoxes) < 4 || h.m.quickBoxes[0].Name != "Imbox" {
+	// The Inbox leads the bar, the way it does in every other mail client.
+	if len(h.m.quickBoxes) < 2 || h.m.quickBoxes[0].Name != "Inbox" {
 		t.Fatalf("quick boxes wrong: %+v", h.m.quickBoxes)
 	}
 
 	h.press(t, "2")
 
-	if h.m.box.Name != "Feed" {
-		t.Errorf("pressing 2 opened %q, want Feed", h.m.box.Name)
+	if h.m.box.Name != "Starred" {
+		t.Errorf("pressing 2 opened %q, want Starred", h.m.box.Name)
 	}
 
 	if h.m.view != viewThreads {
 		t.Errorf("pressing 2 gave view %v, want viewThreads", h.m.view)
+	}
+}
+
+// TestQuickBoxesAreConventionalAndSkipTheScreener pins the bar's contents. The
+// harness configures all four screener boxes and the account has them, so this
+// also shows they are kept off the bar rather than merely missing.
+func TestQuickBoxesAreConventionalAndSkipTheScreener(t *testing.T) {
+	h := newHarness(t)
+
+	var names []string
+	for _, b := range h.m.quickBoxes {
+		names = append(names, b.Name)
+	}
+
+	got := strings.Join(names, " ")
+	want := "Inbox Starred Archive Sent Drafts Spam Trash"
+
+	if got != want {
+		t.Errorf("box bar is %q, want %q", got, want)
+	}
+
+	for _, b := range h.m.quickBoxes {
+		switch b.Name {
+		case "Imbox", "Feed", "Paper Trail", "Screened Out":
+			t.Errorf("%q is on the bar; the screener is a queue, not a place", b.Name)
+		}
+	}
+}
+
+// withCategories gives the account the inbox categories, which the fake does
+// not carry, and hands back the row order they should come out in. They go in
+// scrambled on purpose: the row is ordered by name, not by the provider.
+func withCategories(t *testing.T, h *harness) []mail.Box {
+	t.Helper()
+
+	h.m.boxes = append(h.m.boxes,
+		mail.Box{ID: "21", Name: "Promotions", Kind: mail.BoxCategory},
+		mail.Box{ID: "24", Name: "Primary", Kind: mail.BoxCategory},
+		mail.Box{ID: "20", Name: "Social", Kind: mail.BoxCategory},
+	)
+
+	cats := h.m.categoryBoxes()
+
+	var names []string
+	for _, b := range cats {
+		names = append(names, b.Name)
+	}
+
+	if got, want := strings.Join(names, " "), "Primary Social Promotions"; got != want {
+		t.Fatalf("category order is %q, want %q", got, want)
+	}
+
+	return cats
+}
+
+func TestCategoryRowIsDrawnOnlyInTheInbox(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 140, 30
+	withCategories(t, h)
+
+	_ = h.m.View()
+
+	rows := h.m.chromeRows()
+	if rows.categories < 0 {
+		t.Fatal("the category row is missing from the Inbox")
+	}
+
+	if rows.categories != rows.boxes+1 {
+		t.Errorf("the category row is at %d, want %d, directly under the bar",
+			rows.categories, rows.boxes+1)
+	}
+
+	line := stripANSI(strings.Split(h.m.header(), "\n")[rows.categories])
+	for _, want := range []string{"All", "Primary", "Social", "Promotions"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the category row %q is missing %q", line, want)
+		}
+	}
+
+	// Sent has no categories, so the row goes away and nothing under it moves.
+	sent, ok := h.m.boxByName("Sent")
+	if !ok {
+		t.Fatal("the account has no Sent box")
+	}
+
+	h.m.box = sent
+	_ = h.m.View()
+
+	if h.m.chromeRows().categories >= 0 {
+		t.Error("the category row is drawn in Sent")
+	}
+}
+
+func TestClickingACategoryFiltersTheInbox(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 140, 30
+	withCategories(t, h)
+
+	// One conversation carries the Promotions label, so the filter has
+	// something to pick out rather than merely emptying the list.
+	if err := h.st.PutConversations(context.Background(), []mail.Conversation{{
+		ID: "c4", Subject: "Half price", Time: time.Now(), NumMessages: 1,
+		Senders: []mail.Address{{Name: "Shop", Address: "shop@example.com"}},
+		BoxIDs:  []string{"0", "21"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = h.m.View()
+
+	rows := h.m.chromeRows()
+	plain := stripANSI(strings.Split(h.m.header(), "\n")[rows.categories])
+
+	col := strings.Index(plain, "Promotions")
+	if col < 0 {
+		t.Fatalf("Promotions is not in the category row: %q", plain)
+	}
+
+	h.clickAt(t, col+len(h.m.gutter()), rows.categories)
+
+	if h.m.categoryID != "21" {
+		t.Fatalf("clicking Promotions filtered by %q, want 21", h.m.categoryID)
+	}
+
+	// The box is a filter on the Inbox, not a box of its own.
+	if h.m.box.Name != "Inbox" {
+		t.Errorf("the box became %q; the category is a filter on the Inbox", h.m.box.Name)
+	}
+
+	if len(h.m.convs) != 1 || h.m.convs[0].ID != "c4" {
+		t.Errorf("the filtered listing is %+v, want only c4", h.m.convs)
+	}
+
+	// All puts the whole box back.
+	col = strings.Index(plain, "All")
+	if col < 0 {
+		t.Fatalf("All is not in the category row: %q", plain)
+	}
+
+	h.clickAt(t, col+len(h.m.gutter()), h.m.chromeRows().categories)
+
+	if h.m.categoryID != "" {
+		t.Fatalf("clicking All left the filter at %q", h.m.categoryID)
+	}
+
+	if len(h.m.convs) != 4 {
+		t.Errorf("All listed %d conversations, want the whole Inbox of 4", len(h.m.convs))
+	}
+}
+
+func TestSwitchingBoxClearsTheCategory(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 140, 30
+	withCategories(t, h)
+
+	h.press(t, "]")
+
+	if h.m.categoryID == "" {
+		t.Fatal("] did not pick a category")
+	}
+
+	// 3 is Archive on the conventional bar.
+	h.press(t, "3")
+
+	if h.m.box.Name != "Archive" {
+		t.Fatalf("3 opened %q, want Archive", h.m.box.Name)
+	}
+
+	if h.m.categoryID != "" {
+		t.Errorf("the category survived the box change as %q", h.m.categoryID)
+	}
+}
+
+func TestBracketKeysCycleCategories(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 140, 30
+	cats := withCategories(t, h)
+
+	h.press(t, "]")
+
+	if h.m.categoryID != cats[0].ID {
+		t.Fatalf("] gave %q, want %q", h.m.categoryID, cats[0].ID)
+	}
+
+	h.press(t, "]")
+
+	if h.m.categoryID != cats[1].ID {
+		t.Fatalf("a second ] gave %q, want %q", h.m.categoryID, cats[1].ID)
+	}
+
+	h.press(t, "[")
+	h.press(t, "[")
+
+	if h.m.categoryID != "" {
+		t.Fatalf("[ back past the first category gave %q, want All", h.m.categoryID)
+	}
+
+	// The row wraps, so [ from All lands on the last category.
+	h.press(t, "[")
+
+	if h.m.categoryID != cats[len(cats)-1].ID {
+		t.Errorf("[ from All gave %q, want the last category %q",
+			h.m.categoryID, cats[len(cats)-1].ID)
 	}
 }
 
@@ -1005,15 +1210,15 @@ func TestClickOnTheBoxBarSwitchesBox(t *testing.T) {
 
 	plain := stripANSI(strings.Split(h.m.header(), "\n")[rows.boxes])
 
-	col := strings.Index(plain, "Feed")
+	col := strings.Index(plain, "Archive")
 	if col < 0 {
-		t.Fatalf("Feed is not in the box bar: %q", plain)
+		t.Fatalf("Archive is not in the box bar: %q", plain)
 	}
 
 	h.clickAt(t, col+len(h.m.gutter()), rows.boxes)
 
-	if h.m.box.Name != "Feed" {
-		t.Errorf("clicking Feed opened %q", h.m.box.Name)
+	if h.m.box.Name != "Archive" {
+		t.Errorf("clicking Archive opened %q", h.m.box.Name)
 	}
 }
 

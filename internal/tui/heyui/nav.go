@@ -45,6 +45,13 @@ func renderNavLabel(label, shortcut string, base lipgloss.Style) string {
 	if shortcut == "" {
 		return base.Render(label)
 	}
+	// A letter shortcut is a mnemonic and is underlined where it occurs in the
+	// word; a digit is a positional accelerator and belongs in front of the
+	// label. Underlining a digit in place finds it inside an unread count --
+	// "1 Inbox (13)" loses its prefix and underlines the 1 of 13 instead.
+	if isDigits(shortcut) {
+		return base.Underline(true).Render(shortcut) + base.Render(" "+label)
+	}
 	idx := strings.Index(strings.ToLower(label), strings.ToLower(shortcut))
 	if idx < 0 {
 		return base.Underline(true).Render(shortcut) + base.Render(" "+label)
@@ -236,3 +243,19 @@ func renderTopRule(width int, title, account string) string {
 }
 
 // renderHeader renders the full 3-row navigation header.
+
+// isDigits reports whether every rune is a decimal digit, which is what
+// separates a positional accelerator from a mnemonic letter.
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+
+	return true
+}

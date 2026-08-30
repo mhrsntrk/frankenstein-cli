@@ -38,12 +38,20 @@ func TestDumpHeyRows(t *testing.T) {
 			Senders: []mail.Address{{Name: "Building Inspector"}}},
 	}
 	h.m.setPostings(h.m.convs)
-	h.m.box = mail.Box{ID: "b1", Name: "Imbox"}
+	h.m.box = mail.Box{ID: "0", Name: "Inbox", Unread: 13}
 	h.m.quickBoxes = []mail.Box{
-		{ID: "b1", Name: "Imbox", Unread: 3}, {ID: "b2", Name: "Feed", Unread: 41},
-		{ID: "b3", Name: "Paper Trail"}, {ID: "b4", Name: "Screened Out"},
 		{ID: "0", Name: "Inbox", Unread: 13}, {ID: "10", Name: "Starred"},
+		{ID: "6", Name: "Archive", Unread: 2}, {ID: "7", Name: "Sent"},
+		{ID: "8", Name: "Drafts"}, {ID: "4", Name: "Spam"}, {ID: "3", Name: "Trash"},
 	}
+	h.m.boxes = append(h.m.boxes,
+		mail.Box{ID: "24", Name: "Primary", Kind: mail.BoxCategory},
+		mail.Box{ID: "20", Name: "Social", Kind: mail.BoxCategory},
+		mail.Box{ID: "21", Name: "Promotions", Kind: mail.BoxCategory, Unread: 41},
+		mail.Box{ID: "25", Name: "Newsletters", Kind: mail.BoxCategory},
+		mail.Box{ID: "22", Name: "Updates", Kind: mail.BoxCategory},
+		mail.Box{ID: "26", Name: "Forums", Kind: mail.BoxCategory},
+	)
 	h.m.account = "you@example.com"
 	h.m.pending = 7
 	h.m.view = viewThreads

@@ -204,6 +204,14 @@ func (m *Model) header() string {
 				b.WriteString(bar)
 				b.WriteString("\n")
 			}
+
+			// The categories sit directly under the bar, as a sub-row of the
+			// box they narrow. chromeRows counts these rows in the same order
+			// to map a click, so the two must be changed together.
+			if m.categoryRowShown() {
+				b.WriteString(m.categoryRow(w))
+				b.WriteString("\n")
+			}
 		}
 
 		if m.chromeLevel < chromeNoBanner {
@@ -341,6 +349,38 @@ func (m *Model) boxBar(w int) string {
 	return heyui.NavRow(items, selected, m.boxActive(), w)
 }
 
+// categoryRow is the sub-row under the box bar: the inbox categories, drawn by
+// the same renderer as the bar itself so it reads as part of the same chrome.
+//
+// "All" leads it because no category is the ordinary state, and a row where
+// every entry narrows something would leave no way back to the whole box.
+func (m *Model) categoryRow(w int) string {
+	cats := m.categoryBoxes()
+	if len(cats) == 0 {
+		return ""
+	}
+
+	items := make([]heyui.NavItem, 0, len(cats)+1)
+	items = append(items, heyui.NavItem{Label: categoryAllLabel})
+
+	selected := 0
+
+	for i, b := range cats {
+		label := b.Name
+		if b.Unread > 0 {
+			label = fmt.Sprintf("%s (%d)", b.Name, b.Unread)
+		}
+
+		items = append(items, heyui.NavItem{Label: label})
+
+		if b.ID == m.categoryID {
+			selected = i + 1
+		}
+	}
+
+	return heyui.NavRow(items, selected, true, w)
+}
+
 // screenerBanner keeps the count of waiting senders in front of the reader. The
 // screener is the product; it should not be somewhere you go looking for.
 func (m *Model) screenerBanner(w int) string {
@@ -458,7 +498,8 @@ func (m *Model) keyBindings() []keyBinding {
 	switch m.view {
 	case viewThreads:
 		return []keyBinding{
-			{"j/k", "navigate"}, {"enter", "open"}, {"1-9", "box"}, {"tab", "section"},
+			{"j/k", "navigate"}, {"enter", "open"}, {"1-9", "box"}, {"[/]", "category"},
+			{"tab", "section"},
 			{"/", "filter"}, {"space", "select"}, {"ctrl+a", "all"},
 			{"c", "compose"}, {"r", "reply"}, {"f", "forward"}, {"v", "move"},
 			{"i", "imbox"}, {"d", "feed"}, {"p", "paper trail"}, {"x", "screen out"},
@@ -1074,6 +1115,7 @@ func (m *Model) helpView() string {
 		{"enter", "open"},
 		{"esc backspace", "back"},
 		{"1-9", "jump to a box"},
+		{"[ ]", "previous, next inbox category"},
 		{"tab shift+tab", "Mail, Calendar, Notes"},
 		{"", ""},
 		{"c", "compose"},
