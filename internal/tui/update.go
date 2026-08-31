@@ -1297,6 +1297,16 @@ func parseOptionalAddresses(in string) ([]fmail.Address, error) {
 func (m *Model) goBack() (tea.Model, tea.Cmd) {
 	switch m.view {
 	case viewMessage:
+		// The split screen draws the thread and the open message as one
+		// reading pane, so stepping from one to the other changes nothing a
+		// reader can see: esc has to leave the reader outright, or the first
+		// press looks like a dead key.
+		if m.splitMail() {
+			m.view = viewThreads
+
+			break
+		}
+
 		m.view = viewThread
 	case viewThread:
 		m.view = viewThreads

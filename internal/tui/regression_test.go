@@ -688,10 +688,45 @@ func TestFocusRailMarksThePaneBeingDriven(t *testing.T) {
 
 	// And esc brings it back.
 	h.press(t, "esc")
-	h.press(t, "esc")
 
 	onList, onReading = railAt(h.m.View())
 	if !onList || onReading {
 		t.Errorf("back on the list: rail on list=%v reading=%v", onList, onReading)
+	}
+}
+
+// The split screen shows the thread and the message it has open as one
+// reading pane, so the drill-down esc used to walk -- message, thread, list --
+// had a step in it that changed nothing on screen. One press leaves the
+// reader.
+func TestEscLeavesTheReaderInOnePress(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 150, 22
+
+	h.press(t, "enter")
+
+	if h.m.view != viewMessage {
+		t.Fatalf("enter gave view %v, want viewMessage", h.m.view)
+	}
+
+	h.press(t, "esc")
+
+	if h.m.view != viewThreads {
+		t.Fatalf("esc gave view %v, want viewThreads", h.m.view)
+	}
+
+	// Narrow terminals still drill down, where each step is its own screen.
+	h.m.width = 90
+	h.press(t, "enter")
+	h.press(t, "enter")
+
+	if h.m.view != viewMessage {
+		t.Fatalf("narrow: enter twice gave view %v, want viewMessage", h.m.view)
+	}
+
+	h.press(t, "esc")
+
+	if h.m.view != viewThread {
+		t.Errorf("narrow: esc gave view %v, want viewThread", h.m.view)
 	}
 }

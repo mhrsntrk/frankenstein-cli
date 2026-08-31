@@ -204,7 +204,6 @@ func TestDumpFocus(t *testing.T) {
 
 	t.Logf("reading:\n%s\n", h.m.View())
 
-	h.press(t, "esc")
 	h.press(t, "esc") // back to the list
 
 	t.Logf("list:\n%s\n", h.m.View())
