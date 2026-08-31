@@ -188,3 +188,24 @@ func TestDumpNotes(t *testing.T) {
 	h.press(t, "e")
 	t.Logf("editor:\n%s\n", h.m.View())
 }
+
+// TestDumpFocus prints the split screen with the focus on each pane in turn,
+// so the bar can be looked at. Run with DUMP_VIEW=1.
+func TestDumpFocus(t *testing.T) {
+	if os.Getenv("DUMP_VIEW") == "" {
+		t.Skip("set DUMP_VIEW=1 to print the rendered view")
+	}
+
+	h := newHarness(t)
+	h.m.width, h.m.height = 150, 22
+	h.m.account = "you@example.com"
+
+	h.press(t, "enter") // opens the thread, focus moves to the reader
+
+	t.Logf("reading:\n%s\n", h.m.View())
+
+	h.press(t, "esc")
+	h.press(t, "esc") // back to the list
+
+	t.Logf("list:\n%s\n", h.m.View())
+}

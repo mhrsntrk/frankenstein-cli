@@ -38,6 +38,14 @@ func plainRow(s lipgloss.Style) lipgloss.Style { return s }
 
 func cursorRow(s lipgloss.Style) lipgloss.Style { return heyui.SelectionStyle(s.Reverse(true)) }
 
+// restingCursorRow marks the row the cursor is on in a pane that does not
+// have focus. The place is still worth showing -- it is where the reader
+// will land on the way back -- but it must not compete with the pane being
+// read, so it keeps the bar and gives up the contrast.
+func restingCursorRow(s lipgloss.Style) lipgloss.Style {
+	return heyui.SelectionStyle(s.Reverse(true)).Faint(true)
+}
+
 // fitTo truncates and right-pads plain text to exactly w printable columns.
 // The shared truncateStr counts runes, which lies about emoji; this one
 // measures with the calibrated widths, because sender names and subjects
@@ -110,10 +118,12 @@ func listPageSize(height int) int { return maxInt(0, height/2) }
 // initials block, senders and time on the first row, subject and attachment
 // marker on the second. selected reports whether a conversation is
 // bulk-selected, which turns its initials block into a reversed checkbox.
-// top is the first visible row index. The block is exactly height rows of
-// exactly width columns, and the regions cover each visible conversation as
-// "conv:<index>" in pane-local coordinates.
-func listPane(convs []mail.Conversation, cursor, top int, selected func(string) bool, width, height int) (string, []Region) {
+// top is the first visible row index. focused says whether this pane is the
+// one the keyboard is driving, which decides how loudly the cursor row is
+// drawn. The block is exactly height rows of exactly width columns, and the
+// regions cover each visible conversation as "conv:<index>" in pane-local
+// coordinates.
+func listPane(convs []mail.Conversation, cursor, top int, selected func(string) bool, width, height int, focused bool) (string, []Region) {
 	if width <= 0 || height <= 0 {
 		return "", nil
 	}
@@ -143,8 +153,12 @@ func listPane(convs []mail.Conversation, cursor, top int, selected func(string) 
 
 	for i := top; i < len(convs) && i-top < listPageSize(height); i++ {
 		st := paneStyler(plainRow)
+
 		if i == cursor {
 			st = cursorRow
+			if !focused {
+				st = restingCursorRow
+			}
 		}
 
 		checked := selected != nil && selected(convs[i].ID)

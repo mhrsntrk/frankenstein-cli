@@ -646,7 +646,7 @@ func (m *Model) threadsView() string {
 	m.list.clamp()
 
 	out, _ := listPane(m.list.convs, m.list.cursor, m.list.top,
-		m.list.isSelected, m.contentWidth(), h)
+		m.list.isSelected, m.contentWidth(), h, true)
 
 	return out
 }
@@ -661,8 +661,10 @@ func (m *Model) splitMailView() string {
 
 	m.list.clamp()
 
+	reading := m.readingFocus()
+
 	left, _ := listPane(m.list.convs, m.list.cursor, m.list.top,
-		m.list.isSelected, listW, h)
+		m.list.isSelected, listW, h, !reading)
 
 	if m.loading && m.list.len() == 0 {
 		left = placeholderPane("loading…", listW, h)
@@ -676,7 +678,7 @@ func (m *Model) splitMailView() string {
 		right, _ = threadPane(m.thread, m.msgIdx, m.threadBodyRef(), m.bodyTop, threadW, h)
 	}
 
-	return joinPanes(left, right, h)
+	return joinPanes(left, right, h, reading)
 }
 
 // threadBodyRef is the body text the thread pane may show: the wrapped lines
@@ -698,11 +700,18 @@ func (m *Model) threadBodyRef() []string {
 // joinPanes zips two equal-height blocks with a rule between them. Both panes
 // arrive exactly as wide as promised, so a plain per-line concatenation keeps
 // the separator straight without measuring anything.
-func joinPanes(left, right string, h int) string {
+//
+// Each pane gets a rail on its left edge, and the one with focus draws a solid
+// bar down it. The title rule already names where you are, but a word at the
+// top of the screen is easy to miss with two panes of mail in front of you; a
+// full-height bar beside the pane being driven is not.
+func joinPanes(left, right string, h int, reading bool) string {
 	l := strings.Split(left, "\n")
 	r := strings.Split(right, "\n")
 
 	sep := " " + dimStyle.Render("│") + " "
+
+	lrail, rrail := focusRail(!reading), focusRail(reading)
 
 	var b strings.Builder
 
@@ -717,10 +726,20 @@ func joinPanes(left, right string, h int) string {
 			rs = r[i]
 		}
 
-		b.WriteString(ls + sep + rs + "\n")
+		b.WriteString(lrail + ls + sep + rrail + rs + "\n")
 	}
 
 	return b.String()
+}
+
+// focusRail is one cell of a pane's left edge: a solid bar when the pane has
+// focus, blank when it does not.
+func focusRail(on bool) string {
+	if !on {
+		return strings.Repeat(" ", railWidth)
+	}
+
+	return railStyle.Render("┃")
 }
 
 // placeholderPane centres a dim line in an otherwise empty pane. Every row is

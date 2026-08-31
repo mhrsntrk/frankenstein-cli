@@ -179,10 +179,10 @@ func (m *Model) scroll(delta, x int) (tea.Model, tea.Cmd) {
 // scrollSplit scrolls whichever pane the pointer is over.
 func (m *Model) scrollSplit(delta, x int) (tea.Model, tea.Cmd) {
 	col := x - len(m.gutter())
-	listW, gap, _ := m.paneGeom()
+	listW, _, _ := m.paneGeom()
 	h := maxInt(1, m.pageSize())
 
-	if col < listW {
+	if col < m.listStart()+listW {
 		// The list pane spends two rows on a conversation, so a three-row
 		// wheel notch moves two conversations.
 		m.list.scrollBy(delta * 2 / 3)
@@ -190,7 +190,7 @@ func (m *Model) scrollSplit(delta, x int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if col >= listW+gap {
+	if col >= m.threadStart() {
 		m.bodyTop = clamp(m.bodyTop+delta, 0,
 			maxInt(0, len(m.bodyLines)-maxInt(1, threadBodyRows(m.thread, m.msgIdx, h))))
 	}
@@ -444,10 +444,14 @@ func (m *Model) clickBody(col, line int) (tea.Model, tea.Cmd) {
 // reading pane makes a misplaced click cheap to recover from, unlike the old
 // full-screen drill-down the two-step click protected.
 func (m *Model) clickSplit(col, line int) (tea.Model, tea.Cmd) {
-	listW, gap, threadW := m.paneGeom()
+	listW, _, threadW := m.paneGeom()
 	h := maxInt(1, m.pageSize())
 
-	if col < listW {
+	// The panes start past their focus rails, so a click is measured from
+	// where each one actually begins.
+	col -= m.listStart()
+
+	if col >= 0 && col < listW {
 		i := m.list.top + line/2
 
 		c, ok := m.list.at(i)
@@ -462,14 +466,15 @@ func (m *Model) clickSplit(col, line int) (tea.Model, tea.Cmd) {
 		return m, m.loadThread(c.ID)
 	}
 
-	if col < listW+gap || m.thread.Conversation.ID == "" {
+	col = col + m.listStart() - m.threadStart()
+	if col < 0 || m.thread.Conversation.ID == "" {
 		return m, nil
 	}
 
 	// The same renderer that drew the pane says what is under the click.
 	_, regions := threadPane(m.thread, m.msgIdx, m.threadBodyRef(), m.bodyTop, threadW, h)
 
-	id, ok := hit(regions, col-listW-gap, line)
+	id, ok := hit(regions, col, line)
 	if !ok {
 		return m, nil
 	}

@@ -120,14 +120,14 @@ func TestListPaneDimensions(t *testing.T) {
 
 	for _, size := range []struct{ w, h int }{{40, 20}, {80, 30}} {
 		t.Run(fmt.Sprintf("%dx%d", size.w, size.h), func(t *testing.T) {
-			block, _ := listPane(convs, 1, 0, func(id string) bool { return id == "c1" }, size.w, size.h)
+			block, _ := listPane(convs, 1, 0, func(id string) bool { return id == "c1" }, size.w, size.h, true)
 			requireBlock(t, block, size.w, size.h)
 		})
 	}
 }
 
 func TestListPaneRegions(t *testing.T) {
-	_, regions := listPane(paneConvs(), 0, 0, nil, 40, 20)
+	_, regions := listPane(paneConvs(), 0, 0, nil, 40, 20, true)
 
 	// Conversation 2 occupies rows 4 and 5; a click on either maps to it.
 	for _, y := range []int{4, 5} {
@@ -138,7 +138,7 @@ func TestListPaneRegions(t *testing.T) {
 	}
 
 	// With the list scrolled, indices stay absolute.
-	_, regions = listPane(paneConvs(), 2, 1, nil, 40, 20)
+	_, regions = listPane(paneConvs(), 2, 1, nil, 40, 20, true)
 
 	if id, ok := hit(regions, 0, 0); !ok || id != "conv:1" {
 		t.Fatalf("hit(0, 0) with top=1 = %q, %v; want conv:1", id, ok)
@@ -146,7 +146,7 @@ func TestListPaneRegions(t *testing.T) {
 }
 
 func TestListPaneCursorStyled(t *testing.T) {
-	block, _ := listPane(paneConvs(), 2, 0, nil, 40, 20)
+	block, _ := listPane(paneConvs(), 2, 0, nil, 40, 20, true)
 	lines := strings.Split(block, "\n")
 
 	for _, y := range []int{4, 5} {
@@ -161,7 +161,7 @@ func TestListPaneCursorStyled(t *testing.T) {
 }
 
 func TestListPaneEmpty(t *testing.T) {
-	block, regions := listPane(nil, 0, 0, nil, 40, 10)
+	block, regions := listPane(nil, 0, 0, nil, 40, 10, true)
 	requireBlock(t, block, 40, 10)
 
 	if len(regions) != 0 {

@@ -107,6 +107,7 @@ var (
 	bannerStyle   = lipgloss.NewStyle().Reverse(true).Bold(true)
 	okStyle       = lipgloss.NewStyle().Foreground(heyui.Primary()).Bold(true)
 	markStyle     = lipgloss.NewStyle().Foreground(heyui.Primary()).Bold(true)
+	railStyle     = lipgloss.NewStyle().Foreground(heyui.Primary()).Bold(true)
 )
 
 // composeKind distinguishes what a compose form is for, which decides the
@@ -518,11 +519,37 @@ func mailSplitView(v view) bool {
 // paneGeom splits the content width between the list and the thread pane,
 // with a three-cell gap for the separator.
 func (m *Model) paneGeom() (listW, gap, threadW int) {
-	w := m.contentWidth()
+	// Each pane carries a one-column rail on its left edge, which is where
+	// the focus bar is drawn, so the panes themselves get what is left.
+	w := m.contentWidth() - 2*railWidth
 	listW = clamp(w*2/5, 30, 70)
 	gap = 3
 
 	return listW, gap, maxInt(20, w-listW-gap)
+}
+
+// railWidth is the column each pane reserves on its left for the focus bar.
+const railWidth = 1
+
+// listStart and threadStart are the columns the two panes begin at, counted
+// from the left edge of the content column. The mouse maths and the renderer
+// both go through these so a change to the rail cannot move one without the
+// other.
+func (m *Model) listStart() int { return railWidth }
+
+func (m *Model) threadStart() int {
+	listW, gap, _ := m.paneGeom()
+
+	return railWidth + listW + gap + railWidth
+}
+
+// readingFocus reports whether the reading pane is the one being driven,
+// rather than the list. In the split view both are on screen at once, so
+// something has to say which of them the keys act on.
+func (m *Model) readingFocus() bool {
+	bv := m.backView()
+
+	return bv == viewThread || bv == viewMessage
 }
 
 // backView is the screen the composer floats over. The composer is a popup,

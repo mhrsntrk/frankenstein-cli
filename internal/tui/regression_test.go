@@ -46,7 +46,7 @@ func TestHostileInputStaysInertInSplitPanes(t *testing.T) {
 		Time:        now,
 	}}
 
-	block, _ := listPane(convs, 0, 0, nil, 60, 10)
+	block, _ := listPane(convs, 0, 0, nil, 60, 10, true)
 	assertInert(t, "listPane", block)
 
 	th := mail.Thread{
@@ -640,5 +640,58 @@ func TestBackgroundLoadingDoesNotBlockSending(t *testing.T) {
 
 	if !sent {
 		t.Error("nothing was sent")
+	}
+}
+
+// With two panes on screen, the title rule alone does not say which one the
+// keys are driving. A full-height bar marks the pane with focus, and it moves
+// when the focus does.
+func TestFocusRailMarksThePaneBeingDriven(t *testing.T) {
+	h := newHarness(t)
+	h.m.width, h.m.height = 150, 22
+
+	railAt := func(frame string) (list, reading bool) {
+		t.Helper()
+
+		for _, line := range strings.Split(frame, "\n") {
+			plain := stripANSI(line)
+
+			i := strings.Index(plain, "┃")
+			if i < 0 {
+				continue
+			}
+
+			// The separator sits between the panes, so which side of it the
+			// bar falls on says which pane it belongs to.
+			if sep := strings.Index(plain, "│"); sep >= 0 && i > sep {
+				reading = true
+			} else {
+				list = true
+			}
+		}
+
+		return list, reading
+	}
+
+	onList, onReading := railAt(h.m.View())
+	if !onList || onReading {
+		t.Errorf("opening on the list: rail on list=%v reading=%v", onList, onReading)
+	}
+
+	// Opening a conversation hands the focus to the reader.
+	h.press(t, "enter")
+
+	onList, onReading = railAt(h.m.View())
+	if onList || !onReading {
+		t.Errorf("reading: rail on list=%v reading=%v", onList, onReading)
+	}
+
+	// And esc brings it back.
+	h.press(t, "esc")
+	h.press(t, "esc")
+
+	onList, onReading = railAt(h.m.View())
+	if !onList || onReading {
+		t.Errorf("back on the list: rail on list=%v reading=%v", onList, onReading)
 	}
 }
