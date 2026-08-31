@@ -1,6 +1,6 @@
 // Package terminal makes text that came from somewhere else safe to print.
 //
-// Everything HEY serves — a sender's name, a subject, a filename, a label — was
+// Everything the mail server serves — a sender's name, a subject, a filename, a label — was
 // written by somebody else, and a terminal acts on the escape sequences and
 // control characters it is handed. Stripping the sequence outright is what makes
 // the string inert. Defacing its ESC byte only hides the trigger: the payload
@@ -10,7 +10,7 @@
 // The bidirectional controls go the same way. They do not move the cursor, but
 // they move what the reader sees: a right-to-left override (U+202E) between
 // "invoice" and "fdp.exe" shows a PDF on screen and an executable on disk, and an
-// isolate can swap the order of a sender's name and address. Nothing HEY shows in a single line needs
+// isolate can swap the order of a sender's name and address. Nothing the mail server shows in a single line needs
 // them — an RTL name still reads right-to-left without an explicit override.
 //
 // # Confusables

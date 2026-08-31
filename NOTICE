@@ -6,37 +6,35 @@ This product includes software developed by 37signals LLC.
 The following files are copied from basecamp/hey-cli (MIT licensed,
 https://github.com/basecamp/hey-cli) and carry its copyright:
 
-  internal/tui/heyui/content.go    the thread list renderer
-  internal/tui/heyui/styles.go     the style set
-  internal/tui/heyui/theme.go      theme loading and contrast checks
-  internal/tui/heyui/width.go      grapheme-aware column widths
-  internal/tui/heymodel/posting.go the row types the renderer draws
-  internal/terminal/sanitize.go    escape-sequence stripping
+  internal/tui/heyui/styles.go           the style set
+  internal/tui/heyui/theme.go            theme loading and contrast checks
+  internal/tui/heyui/width.go            grapheme-aware column widths
+  internal/tui/heyui/text.go             section headings and width fitting
+  internal/tui/heyui/nav.go              the rule, nav row and top rule
+  internal/tui/heyui/calendar_views.go   the day, week and year grids
+  internal/tui/heyui/calendar_types.go   the Recording row type
+  internal/tui/heyui/calendar_helpers.go the habit palette and time format
+  internal/habit/                        habit icon and colour values
+  internal/terminal/sanitize.go          escape-sequence stripping
 
 They are kept as close to upstream as practical so they stay diffable
 against it. Local additions sit in separate files:
 
-  internal/tui/heyui/list.go       an exported wrapper around their list
-  internal/tui/heyui/theme_api.go  theme accessors for this project's chrome
-  internal/tui/heyui/cover_stub.go stubs for HEY's cover art, which has no
-                                   Proton equivalent
+  internal/tui/heyui/nav_api.go       chrome renderers for this project
+  internal/tui/heyui/theme_api.go     theme accessors for this project
+  internal/tui/heyui/calendar_api.go  the calendar entry points
 
-HEY, the Imbox, the Feed, the Paper Trail and the screener are creations of
-37signals. This project is not affiliated with, endorsed by, or supported by
-them, and HEY is their trademark.
+Two copied functions carry a deliberate change, both in nav.go:
+renderTopRule hardcoded the HEY wordmark and takes a title instead, and
+renderNavLabel underlines a digit shortcut as a prefix rather than wherever
+the digit happens to occur inside the label.
+
+This project once followed HEY's workflow and no longer does: the screener,
+the Imbox, the Feed and the Paper Trail have been removed, and what remains
+of hey-cli here is the terminal rendering. HEY and those names are creations
+of 37signals. This project is not affiliated with, endorsed by, or supported
+by them, and HEY is their trademark.
 
 Mail is reached through go-proton-api, gopenpgp and go-crypto, published by
 Proton AG. This project is an independent client and is not affiliated with,
 endorsed by, or supported by Proton AG.
-
-Later additions from the same source, on the same terms:
-
-  internal/tui/heyui/calendar_views.go   the day and week grids
-  internal/tui/heyui/calendar_types.go   the Recording row type
-  internal/tui/heyui/calendar_helpers.go the habit palette and time format
-  internal/tui/heyui/nav.go              the rule, nav row and top rule
-  internal/tui/heyui/width.go            grapheme-aware column widths
-  internal/habit/                        habit icon and colour values
-
-renderTopRule is the one copied function with a deliberate change: it hardcoded
-the HEY wordmark, and takes a title instead.

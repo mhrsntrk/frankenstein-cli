@@ -1,6 +1,10 @@
 // Package protonmail implements the mail.Provider interface against Proton's
-// REST API, using a fork of go-proton-api that adds the conversation,
-// newsletter and category surface upstream does not model.
+// REST API.
+//
+// go-proton-api is used unmodified, as an ordinary dependency, for
+// authentication, decryption, labels, drafts and sending. The conversation,
+// newsletter and category surface it does not model comes from
+// internal/protonapi, a small client of our own sharing the same session.
 package protonmail
 
 import (

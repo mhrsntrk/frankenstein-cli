@@ -41,7 +41,13 @@ archives:
     files:
       - README.md
       - LICENSE
+      # Third-party attribution for the files copied from hey-cli. It has to
+      # travel with the binary, not just sit in the source tree.
+      - NOTICE
       - docs/proton-api-findings.md
+      # Linked from the README, so it has to be in the archive the README ships
+      # in or the link is dead for anyone reading offline.
+      - docs/calendar-setup.md
       - src: .gen/man/*.1
         dst: man
       - src: .gen/completions/*
@@ -106,6 +112,14 @@ nfpms:
           mode: 0644
       - src: ./.gen/man/frankenstein.1
         dst: /usr/share/man/man1/frankenstein.1
+        file_info:
+          mode: 0644
+      - src: ./NOTICE
+        dst: /usr/share/doc/frankenstein/NOTICE
+        file_info:
+          mode: 0644
+      - src: ./docs/calendar-setup.md
+        dst: /usr/share/doc/frankenstein/calendar-setup.md
         file_info:
           mode: 0644
 
@@ -183,7 +197,9 @@ aurs:
       install -Dm755 "./frankenstein" "${pkgdir}/usr/bin/frankenstein"
 
       install -Dm644 "./LICENSE" "${pkgdir}/usr/share/licenses/frankenstein-bin/LICENSE"
+      install -Dm644 "./NOTICE" "${pkgdir}/usr/share/licenses/frankenstein-bin/NOTICE"
       install -Dm644 "./README.md" "${pkgdir}/usr/share/doc/frankenstein-bin/README.md"
+      install -Dm644 "./docs/calendar-setup.md" "${pkgdir}/usr/share/doc/frankenstein-bin/calendar-setup.md"
 
       install -Dm644 "./man/frankenstein.1" "${pkgdir}/usr/share/man/man1/frankenstein.1"
 
@@ -217,3 +233,18 @@ release:
     ```sh
     go install github.com/mhrsntrk/frankenstein-cli/cmd/frankenstein@{{ .Tag }}
     ```
+
+    ## macOS, downloading an archive directly
+
+    These binaries are not signed with an Apple Developer ID and are not
+    notarized. macOS quarantines anything downloaded from a browser, so an
+    unsigned binary is refused with "damaged and can't be opened". Clear the
+    quarantine attribute after unpacking:
+
+    ```sh
+    xattr -dr com.apple.quarantine ./frankenstein
+    ```
+
+    Homebrew does this for you, so `brew install mhrsntrk/tap/frankenstein`
+    needs no extra step. Verify the download against `checksums.txt` if you
+    would rather not trust the transfer.

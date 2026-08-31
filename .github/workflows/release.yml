@@ -21,8 +21,11 @@ jobs:
           go-version: '1.26'
           cache: true
 
-      - name: Test before releasing
-        run: go test ./...
+      # The same target CI runs: formatting, vet, build, race tests,
+      # staticcheck and the provider boundary. A bare `go test` here would let a
+      # tag ship what a pull request would have been blocked on.
+      - name: Check before releasing
+        run: make check
 
       - uses: goreleaser/goreleaser-action@v6
         with:

@@ -37,10 +37,6 @@ func renderRule(width int, label string) string {
 // first occurrence of the shortcut letter (the Windows menu convention).
 // A shortcut absent from the label — a number — is shown as an underlined
 // prefix instead: "1 Inbox".
-// renderNavLabel renders a nav label in the given style, underlining the
-// first occurrence of the shortcut letter (the Windows menu convention).
-// A shortcut absent from the label — a number — is shown as an underlined
-// prefix instead: "1 Inbox".
 func renderNavLabel(label, shortcut string, base lipgloss.Style) string {
 	if shortcut == "" {
 		return base.Render(label)
@@ -67,10 +63,6 @@ func renderNavLabel(label, shortcut string, base lipgloss.Style) string {
 	return out
 }
 
-// renderNavRow draws a row of nav items with the selected one bolded.
-// If centered is true, the row is horizontally centered within width.
-// When items overflow the available width, the row scrolls horizontally
-// to keep the selected item visible and shows ‹/› indicators.
 // renderNavRow draws a row of nav items with the selected one bolded.
 // If centered is true, the row is horizontally centered within width.
 // When items overflow the available width, the row scrolls horizontally
@@ -193,17 +185,11 @@ func renderNavRow(items []navItem, selected int, focused bool, width int, center
 }
 
 // centerText pads text so it sits in the middle of width.
-// centerText pads text so it sits in the middle of width.
 func centerText(text string, width int) string {
 	pad := max((width-lipgloss.Width(text))/2, 0)
 	return strings.Repeat(" ", pad) + text
 }
 
-// renderTopRule draws the top rule with HEY centered and the account
-// aligned to the right, both bold:
-//
-//	─────────── HEY ─────────── jz@example.com ──
-//
 // renderTopRule draws the top rule with HEY centered and the account
 // aligned to the right, both bold:
 //

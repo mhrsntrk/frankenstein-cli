@@ -1,6 +1,6 @@
 ---
 name: frankenstein
-description: Read and act on the user's Proton Mail and Google Calendar through the frankenstein CLI. Use when the user asks about their email, inbox, threads, newsletters, calendar, todos, habits, tracked time, or journal. Triggers on "my email", "my inbox", "who emailed me", "what's on my calendar", "my todos", "my newsletters".
+description: Read and act on the user's Proton Mail and Google Calendar through the frankenstein CLI. Use when the user asks about their email, inbox, threads, newsletters, calendar, notes, todos, habits, tracked time, or journal. Triggers on "my email", "my inbox", "who emailed me", "what's on my calendar", "my todos", "my notes", "my newsletters".
 ---
 
 # frankenstein
@@ -23,6 +23,11 @@ themselves. It is interactive: it prompts for a password, may need a
 two-factor code, and Proton often demands a CAPTCHA solved in a browser. Do
 not try to drive it. Tell the user to run it and stop.
 
+`login` also refuses outright while `app_version` is unset in the config file,
+which is how the tool ships. Setting it means presenting to Proton as one of
+their own clients, so it is the user's call and theirs alone: point them at the
+README section on identifying to Proton and do not edit the config for them.
+
 ## The interactive client
 
 If the user wants to work through their mail themselves rather than have you do
@@ -36,7 +41,12 @@ Use the commands below when *you* are doing the work.
 
 Mail is a **warm cache**, not a live query. `frankenstein sync` fills a local
 SQLite index from Proton; listing commands read that index and are instant.
-Only `thread`, `read`, `compose`, `reply` and `send` reach the network.
+
+Only `whoami`, `boxes`, `box`, `threads` and a plain `newsletters` read the
+cache alone. Everything else reaches the network: `sync`, `thread`, `read`,
+`compose`, `reply`, `drafts`, `send`, `label`, `newsletters --refresh`, and
+every `calendar` subcommand. Notes, todos, habits, time and journal commands
+touch neither, being local.
 
 If a listing looks stale or empty, run `frankenstein sync --json` first.
 
@@ -111,10 +121,15 @@ frankenstein time stop --json
 frankenstein time report --since 2026-08-01 --json
 frankenstein journal write "..." --title "..." --json
 frankenstein journal search "..." --json
+frankenstein notes list --json
+frankenstein notes show <name> --json
+frankenstein notes new "Release checklist" --json
 ```
 
-Calendar and todos are Google-backed and need `frankenstein calendar setup`
-once, which is interactive. Habits, time tracking and the journal are local.
+Only the calendar is Google-backed, and it needs `frankenstein calendar setup`
+once, which is interactive. Todos, habits, time tracking, the journal and notes
+are local: they are kept in SQLite and markdown files on this machine, never
+reach Google, and work whether or not the calendar is set up.
 
 ## Things that will trip you up
 

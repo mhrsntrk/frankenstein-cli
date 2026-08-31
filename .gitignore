@@ -4,8 +4,17 @@
 *.db
 *.db-wal
 *.db-shm
-raw.log
 probe-out/
 session.json
 credentials.json
+
+# Logs and coverage output. *.log is broad on purpose: a debug log from this
+# tool can hold decrypted subjects and bodies, so an accidental commit is a
+# disclosure, not a mess.
+*.log
+*.out
+coverage.out
+
 .DS_Store
+.idea/
+.vscode/

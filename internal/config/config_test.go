@@ -253,3 +253,41 @@ func TestLoadReplacesNonPositiveValues(t *testing.T) {
 		t.Fatalf("negative values not replaced: %d %d", cfg.BodyCacheSize, cfg.SyncInterval)
 	}
 }
+
+// The client identifier ships unset on purpose: every value Proton accepts is
+// the name of one of its own clients, so sending one is a decision about the
+// user's account and their terms, not a default this tool gets to make.
+func TestAppVersionShipsUnset(t *testing.T) {
+	if Defaults().AppVersion != "" {
+		t.Errorf("Defaults carries an app_version (%q); it must be opt-in",
+			Defaults().AppVersion)
+	}
+
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.AppVersion != "" {
+		t.Errorf("a fresh config loaded an app_version (%q)", cfg.AppVersion)
+	}
+
+	// One the user set survives the round trip, which is the whole point.
+	cfg.AppVersion = ExampleAppVersion
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	back, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if back.AppVersion != ExampleAppVersion {
+		t.Errorf("app_version = %q, want the value that was set", back.AppVersion)
+	}
+}

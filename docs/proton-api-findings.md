@@ -119,7 +119,7 @@ and Android. What is *not* available is server-side automatic routing: a rule
 of our own would only ever be applied while frankenstein is running. Anything
 that has to keep working with this tool shut down must be expressed in a
 mechanism Proton already runs itself, which for mailing lists means the
-per-subscription rules in finding #12.
+per-subscription `MoveToFolder` and `FilterID` rules recorded in finding #7.
 
 ---
 

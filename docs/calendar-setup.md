@@ -127,7 +127,7 @@ come from those last two. Both are local, and the ribbon shows the same list
 
 | | |
 |---|---|
-| Client ID and secret | `~/.config/frankenstein/config.json` |
+| Client ID and secret | the config file: `~/.config/frankenstein/config.json` on Linux, `~/Library/Application Support/frankenstein/config.json` on macOS |
 | OAuth token | your system keyring |
 
 `frankenstein logout` clears the token along with the Proton session. The

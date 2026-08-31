@@ -1,0 +1,31 @@
+version: 2
+
+# This is a mail client. The dependency graph carries gopenpgp, go-crypto and
+# go-proton-api, so a stale pin here is a stale pin on the code that decrypts
+# mail. Weekly rather than daily: the point is to notice within days, not to
+# generate a pull request every morning.
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: chore
+    groups:
+      # One pull request for the routine bumps, so the crypto and Proton
+      # dependencies stand out on their own instead of scrolling past in a
+      # list of ten.
+      go-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+        exclude-patterns:
+          - github.com/ProtonMail/*
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci

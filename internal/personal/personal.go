@@ -1,9 +1,9 @@
-// Package personal holds the domains Proton has no equivalent for: habits,
-// time tracking and a journal.
+// Package personal holds the domains Proton has no equivalent for: notes,
+// todos, habits, time tracking and a journal.
 //
 // These are local by design. Journal entries are markdown files on disk with
-// only their index in SQLite, so they stay readable and greppable without this
-// tool.
+// only their index in SQLite, and notes are markdown files with no index at
+// all, so both stay readable and greppable without this tool.
 package personal
 
 import (

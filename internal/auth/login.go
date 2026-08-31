@@ -106,6 +106,12 @@ func newManager(cfg config.Config) (*proton.Manager, error) {
 		return nil, fmt.Errorf("cookie jar: %w", err)
 	}
 
+	// Refused here rather than at the API, so the message is ours and says
+	// what the choice actually is.
+	if strings.TrimSpace(cfg.AppVersion) == "" {
+		return nil, appVersionUnset()
+	}
+
 	return proton.New(
 		proton.WithHostURL(cfg.APIHost),
 		proton.WithAppVersion(cfg.AppVersion),
@@ -447,6 +453,30 @@ func asHumanVerification(err error) *HumanVerification {
 	}
 }
 
+// appVersionUnset explains the one piece of configuration this tool cannot
+// choose on anyone's behalf.
+//
+// Proton accepts only identifiers belonging to its own clients, so the
+// working values are all the name of software this is not. Sending one is a
+// decision about the reader's account and Proton's terms, and it is theirs to
+// make knowingly rather than to discover in a default.
+func appVersionUnset() error {
+	path, err := config.Path()
+	if err != nil {
+		path = "the config file"
+	}
+
+	return fmt.Errorf("%w\n\n"+
+		"Proton only accepts client identifiers belonging to its own applications, so\n"+
+		"this tool cannot supply one of its own. Setting app_version means presenting\n"+
+		"to Proton as one of their clients, which their terms do not allow, and the\n"+
+		"account at risk is yours.\n\n"+
+		"To proceed, add it to %s:\n\n"+
+		"    {\"app_version\": %q}\n\n"+
+		"See the README section on identifying to Proton",
+		config.ErrNoAppVersion, path, config.ExampleAppVersion)
+}
+
 // annotateAppVersion turns Proton's opaque version rejections into an error
 // that says what to actually do about it.
 func annotateAppVersion(err error) error {
@@ -457,12 +487,11 @@ func annotateAppVersion(err error) error {
 
 	switch apiErr.Code {
 	case 5003:
-		return fmt.Errorf("%w\n\nProton has retired the client version this tool identifies as (%s). "+
-			"Set app_version in the config to the current Proton Bridge release and try again",
-			err, config.DefaultAppVersion)
+		return fmt.Errorf("%w\n\nProton has retired the client version app_version names. "+
+			"Set it to a current release and try again", err)
 	case 2064:
 		return fmt.Errorf("%w\n\nProton rejected the client identifier. app_version must look like "+
-			"<platform>-bridge@<version>, e.g. %s", err, config.DefaultAppVersion)
+			"<platform>-bridge@<version>, e.g. %s", err, config.ExampleAppVersion)
 	default:
 		return err
 	}

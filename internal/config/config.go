@@ -3,6 +3,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,14 +14,27 @@ import (
 // AppName is the binary and config directory name.
 const AppName = "frankenstein"
 
-// DefaultAppVersion is the x-pm-appversion header sent to Proton.
+// DefaultAppVersion is deliberately empty, and the tool will not talk to
+// Proton until it is set.
 //
 // Proton refuses any identifier that is not one of its own clients: the
 // library's own default gets 400 "Platform `go` is not valid", and an
-// out-of-date version gets 422 code 5003. There is no third-party identity to
-// use, so we present as Bridge. This pin will eventually expire and need
-// bumping; see README.md.
-const DefaultAppVersion = "macos-bridge@3.26.0"
+// out-of-date version gets 422 code 5003. The only identifier that works is
+// one belonging to an official client, and sending it means presenting as
+// software this is not. That is a decision about someone's own account and
+// Proton's terms, so it is left to the person running the tool rather than
+// shipped as a default: set app_version in the config to opt in. See
+// README.md.
+const DefaultAppVersion = ""
+
+// ExampleAppVersion is the shape app_version has to take, quoted in the error
+// a user meets when it is unset. It is an example, not a default: nothing
+// sends it unless the config says so.
+const ExampleAppVersion = "macos-bridge@3.26.0"
+
+// ErrNoAppVersion says the client identifier is unset. It is a configuration
+// problem rather than a network one, so it is worth its own error.
+var ErrNoAppVersion = errors.New("app_version is not set")
 
 // DefaultAPIHost is Proton's API root.
 const DefaultAPIHost = "https://mail.proton.me/api"
@@ -82,7 +96,6 @@ func (c CalendarConfig) Shown() []string {
 func Defaults() Config {
 	return Config{
 		APIHost:       DefaultAPIHost,
-		AppVersion:    DefaultAppVersion,
 		BodyCacheSize: 500,
 		SyncInterval:  30,
 		Calendar:      CalendarConfig{CalendarID: "primary"},
@@ -203,10 +216,6 @@ func Load() (Config, error) {
 
 	if cfg.APIHost == "" {
 		cfg.APIHost = d.APIHost
-	}
-
-	if cfg.AppVersion == "" {
-		cfg.AppVersion = d.AppVersion
 	}
 
 	if cfg.BodyCacheSize <= 0 {

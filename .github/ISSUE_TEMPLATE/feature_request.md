@@ -8,7 +8,11 @@ labels: enhancement
 
 **How you would do it today, if at all**
 
-**Does hey-cli do this?**
+**Where it fits**
 
-Not required, but useful: this project deliberately follows hey-cli's shape,
-so "hey-cli does X" is a strong argument.
+Not required, but useful. This is a client for a Proton mailbox as Proton
+already organises it, so a feature that works with the real boxes and labels
+lands more easily than one that invents a filing system on top of them. It
+borrows hey-cli's terminal rendering and command shape, but not its workflow:
+the screener, the Imbox, the Feed and the Paper Trail were deliberately
+removed and are not coming back.
