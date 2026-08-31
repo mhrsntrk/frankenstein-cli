@@ -1,4 +1,4 @@
-package heyui
+package render
 
 // The chrome renderers, exported so this project's header can be drawn by
 // hey-cli's code rather than an imitation of it.

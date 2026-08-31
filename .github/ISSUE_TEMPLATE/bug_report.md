@@ -4,6 +4,10 @@ about: Something does not work
 labels: bug
 ---
 
+This project is a work in progress with no releases and no support commitment.
+Reports are welcome and read, but a fix may take a while or may never come, and
+whole areas are known to be unfinished. Please check the open issues first.
+
 If the bug exposes a session, a passphrase, or message contents, do not file it
 here. Report it privately: see the
 [security policy](https://github.com/mhrsntrk/frankenstein-cli/security/policy).
@@ -28,6 +32,9 @@ problems.
 ```
 frankenstein --version
 ```
+
+Nothing is tagged yet, so that prints a commit rather than a version. If you
+built with plain `go build` it prints `dev`, in which case say which commit.
 
 Also your OS and terminal. Rendering bugs in particular depend on which terminal
 drew them.

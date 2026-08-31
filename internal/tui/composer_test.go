@@ -77,7 +77,7 @@ func TestComposerPopupExactGeometry(t *testing.T) {
 			c := testComposeState()
 			lay := composerPlace(s.w, s.h, false, maximized)
 
-			block, _ := composerPopup(c, lay, false, "m@mhrsntrk.com")
+			block, _ := composerPopup(c, lay, false, "you@example.com")
 
 			lines := strings.Split(block, "\n")
 			if len(lines) != lay.h {
@@ -95,7 +95,7 @@ func TestComposerPopupExactGeometry(t *testing.T) {
 		c := testComposeState()
 		lay := composerPlace(s.w, s.h, true, false)
 
-		block, _ := composerPopup(c, lay, true, "m@mhrsntrk.com")
+		block, _ := composerPopup(c, lay, true, "you@example.com")
 
 		if lines := strings.Split(block, "\n"); len(lines) != 1 {
 			t.Fatalf("minimized at %dx%d: %d lines, want 1", s.w, s.h, len(lines))
@@ -112,7 +112,7 @@ func TestComposerPopupCcRowAppears(t *testing.T) {
 
 	c := testComposeState()
 
-	block, regions := composerPopup(c, lay, false, "m@mhrsntrk.com")
+	block, regions := composerPopup(c, lay, false, "you@example.com")
 
 	if _, ok := regionByID(regions, "togglecc"); !ok {
 		t.Error("no togglecc region while the Cc row is hidden")
@@ -125,7 +125,7 @@ func TestComposerPopupCcRowAppears(t *testing.T) {
 	// Focusing the cc field summons the Cc and Bcc rows and retires the toggle.
 	c.field = 1
 
-	block2, regions2 := composerPopup(c, lay, false, "m@mhrsntrk.com")
+	block2, regions2 := composerPopup(c, lay, false, "you@example.com")
 
 	if _, ok := regionByID(regions2, "field:cc"); !ok {
 		t.Error("no field:cc region while the cc field has focus")
@@ -161,7 +161,7 @@ func TestComposerPopupHitButtons(t *testing.T) {
 	c := testComposeState()
 	lay := composerPlace(120, 40, false, false)
 
-	_, regions := composerPopup(c, lay, false, "m@mhrsntrk.com")
+	_, regions := composerPopup(c, lay, false, "you@example.com")
 
 	// The ✕ sits three cells in from the right edge of the title bar.
 	if id, ok := hit(regions, lay.w-3, 0); !ok || id != "close" {
@@ -184,7 +184,7 @@ func TestComposerBarHitButtons(t *testing.T) {
 	c := testComposeState()
 	lay := composerPlace(120, 40, true, false)
 
-	_, regions := composerPopup(c, lay, true, "m@mhrsntrk.com")
+	_, regions := composerPopup(c, lay, true, "you@example.com")
 
 	if id, ok := hit(regions, lay.w-1, 0); !ok || id != "close" {
 		t.Errorf("hit(%d, 0) = %q, %v; want close", lay.w-1, id, ok)
@@ -208,8 +208,8 @@ func TestComposerPopupFocusStyling(t *testing.T) {
 	focusSubject := testComposeState()
 	focusSubject.field = 3
 
-	a, _ := composerPopup(focusTo, lay, false, "m@mhrsntrk.com")
-	b, _ := composerPopup(focusSubject, lay, false, "m@mhrsntrk.com")
+	a, _ := composerPopup(focusTo, lay, false, "you@example.com")
+	b, _ := composerPopup(focusSubject, lay, false, "you@example.com")
 
 	al, bl := strings.Split(a, "\n"), strings.Split(b, "\n")
 

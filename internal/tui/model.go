@@ -20,7 +20,7 @@ import (
 	"github.com/mhrsntrk/frankenstein-cli/internal/personal"
 	"github.com/mhrsntrk/frankenstein-cli/internal/store"
 	fsync "github.com/mhrsntrk/frankenstein-cli/internal/sync"
-	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/render"
 )
 
 // How much chrome is shown, in the order it is given up on a short terminal:
@@ -97,17 +97,17 @@ const (
 // The chrome takes its colours from hey-cli's theme, so the header, the lists
 // and the calendar grids all sit in one palette.
 var (
-	titleStyle    = lipgloss.NewStyle().Foreground(heyui.Bright()).Bold(true)
+	titleStyle    = lipgloss.NewStyle().Foreground(render.Bright()).Bold(true)
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
 	unreadStyle   = lipgloss.NewStyle().Bold(true)
-	dimStyle      = heyui.MutedStyle()
-	errorStyle    = lipgloss.NewStyle().Foreground(heyui.Alert()).Bold(true)
-	statusStyle   = heyui.MutedStyle()
-	keyStyle      = lipgloss.NewStyle().Foreground(heyui.Bright()).Bold(true)
+	dimStyle      = render.MutedStyle()
+	errorStyle    = lipgloss.NewStyle().Foreground(render.Alert()).Bold(true)
+	statusStyle   = render.MutedStyle()
+	keyStyle      = lipgloss.NewStyle().Foreground(render.Bright()).Bold(true)
 	bannerStyle   = lipgloss.NewStyle().Reverse(true).Bold(true)
-	okStyle       = lipgloss.NewStyle().Foreground(heyui.Primary()).Bold(true)
-	markStyle     = lipgloss.NewStyle().Foreground(heyui.Primary()).Bold(true)
-	railStyle     = lipgloss.NewStyle().Foreground(heyui.Primary()).Bold(true)
+	okStyle       = lipgloss.NewStyle().Foreground(render.Primary()).Bold(true)
+	markStyle     = lipgloss.NewStyle().Foreground(render.Primary()).Bold(true)
+	railStyle     = lipgloss.NewStyle().Foreground(render.Primary()).Bold(true)
 )
 
 // composeKind distinguishes what a compose form is for, which decides the
@@ -225,8 +225,8 @@ type Model struct {
 
 	// calHabits and calTodos fill the bands above and below the grid. Both
 	// are local, and live in the same SQLite file as the mail cache.
-	calHabits []heyui.Habit
-	calTodos  []heyui.Todo
+	calHabits []render.Habit
+	calTodos  []render.Todo
 
 	// The todo functions are supplied by the command layer, so this package
 	// needs no Google dependency. Nil means the ribbon and its manager are

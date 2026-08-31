@@ -11,7 +11,7 @@ import (
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	fsync "github.com/mhrsntrk/frankenstein-cli/internal/sync"
-	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/render"
 )
 
 // --- messages ---------------------------------------------------------------
@@ -193,8 +193,8 @@ func (m *Model) loadEvents() tea.Cmd {
 
 // bandsMsg carries the habits and todos drawn around the calendar grid.
 type bandsMsg struct {
-	habits []heyui.Habit
-	todos  []heyui.Todo
+	habits []render.Habit
+	todos  []render.Todo
 }
 
 // loadBands fills the habits band and the todo ribbon.
@@ -208,7 +208,7 @@ func (m *Model) loadBands() tea.Cmd {
 		if m.personal != nil {
 			if habits, err := m.personal.Habits(ctx, false); err == nil {
 				for _, h := range habits {
-					out.habits = append(out.habits, heyui.Habit{
+					out.habits = append(out.habits, render.Habit{
 						ID:    h.ID,
 						Name:  h.Name,
 						Done:  h.DoneDays,
@@ -224,7 +224,7 @@ func (m *Model) loadBands() tea.Cmd {
 				// it: an index invented here would complete the wrong todo
 				// once the list reordered.
 				for _, t := range items {
-					out.todos = append(out.todos, heyui.Todo{
+					out.todos = append(out.todos, render.Todo{
 						ID: t.ID, Title: t.Title, Done: t.Done,
 					})
 				}
@@ -238,7 +238,7 @@ func (m *Model) loadBands() tea.Cmd {
 // habitColour spreads habits across hey-cli's palette deterministically, so a
 // habit keeps its colour between runs.
 func habitColour(id int64) string {
-	names := heyui.HabitColours()
+	names := render.HabitColours()
 	if len(names) == 0 {
 		return ""
 	}

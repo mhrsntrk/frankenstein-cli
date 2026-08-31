@@ -4,6 +4,11 @@ Issues and pull requests are welcome. Participation is covered by
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Security bugs go through
 [SECURITY.md](SECURITY.md) rather than the issue tracker.
 
+This is a work in progress with no releases and no stable surface, so a pull
+request may well land on top of something that has just been rewritten. Opening
+an issue before a large change is worth it for that reason rather than as a
+formality.
+
 ## Running it
 
 ```sh
@@ -13,7 +18,10 @@ make test
 
 The test suite runs against `internal/mail/fake` and needs no Proton account.
 If you have one, `frankenstein login` and `frankenstein sync` will exercise the
-real paths.
+real paths, but you have to set `app_version` in the config first: it ships
+unset on purpose, and the README explains why under [Identifying to
+Proton](README.md#identifying-to-proton). Those paths write to a real mailbox,
+so use an account you would not mind confusing.
 
 Before opening a pull request:
 
@@ -51,21 +59,37 @@ These are not style preferences; breaking them breaks the architecture.
 
 ## Vendored code
 
-The files listed in `NOTICE` are copied from
-[basecamp/hey-cli](https://github.com/basecamp/hey-cli) and are kept as close to
-upstream as practical, so a change there can still be diffed against ours.
+Three packages hold files copied from
+[basecamp/hey-cli](https://github.com/basecamp/hey-cli):
 
-Do not edit them directly. New behaviour goes in the `*_api.go` wrapper files
-next to them, which is where `nav_api.go`, `theme_api.go` and `calendar_api.go`
-already live. The two places a copied function did have to change are named in
-`NOTICE`, with the reason.
+- `internal/tui/render`, which used to be called `internal/tui/heyui`
+- `internal/tui/render/habit`, which used to be `internal/habit`
+- `internal/terminal`
+
+The directories no longer carry the provenance in their names, so the package
+comments do. Read
+[`internal/tui/render/doc.go`](internal/tui/render/doc.go) and
+[`internal/tui/render/habit/doc.go`](internal/tui/render/habit/doc.go) before
+touching either package; they are the authority on what may be changed there,
+and `NOTICE` lists file by file what was copied and what is ours.
+
+Copied files are kept as close to upstream as practical, so a change there can
+still be diffed against ours. Do not edit them directly. New behaviour goes in
+the `*_api.go` wrapper files next to them, which is where `nav_api.go`,
+`theme_api.go` and `calendar_api.go` already live. The two places a copied
+function did have to change are named in `NOTICE`, with the reason.
 
 Those files carry helpers this client never calls, and that is deliberate:
 deleting them would make the file stop matching upstream, which is the only
 thing keeping them worth copying. It is also why `make check` and CI run
-staticcheck with `internal/tui/heyui`, `internal/habit` and `internal/terminal`
-excluded. If you find yourself deleting an unused symbol in one of those
+staticcheck with `internal/tui/render`, `internal/tui/render/habit` and
+`internal/terminal` excluded, through the `VENDORED_PKGS` pattern in the
+Makefile. If you find yourself deleting an unused symbol in one of those
 packages to make a linter happy, stop; the linter is already told not to look.
+
+What is not vendored is hey-cli's workflow. The screener, the Imbox, the Feed
+and the Paper Trail were removed and are not coming back; what was kept is the
+rendering.
 
 ## Comments
 

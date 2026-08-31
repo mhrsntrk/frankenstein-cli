@@ -12,7 +12,7 @@ import (
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	fmail "github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
-	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/render"
 )
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -220,7 +220,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		for _, c := range msg {
-			m.calColours[c.ID] = heyui.ColourFor(c.Color)
+			m.calColours[c.ID] = render.ColourFor(c.Color)
 			m.calNames[c.ID] = c.Name
 		}
 

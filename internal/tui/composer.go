@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/render"
 )
 
 // The composer floats over the mail view the way Proton's web client floats
@@ -110,8 +110,8 @@ func composerPopup(c *composeState, lay composerLayout, minimized bool, account 
 
 	// Title bar: ┌ title ──── ─ □ ✕ ┐. The buttons are the only clickable
 	// cells; the rest of the bar drags nothing, so it gets no region.
-	title := heyui.Truncate(composeTitle(c), maxInt(lay.w-11, 1))
-	fill := maxInt(lay.w-11-heyui.DisplayWidth(title), 0)
+	title := render.Truncate(composeTitle(c), maxInt(lay.w-11, 1))
+	fill := maxInt(lay.w-11-render.DisplayWidth(title), 0)
 
 	lines = append(lines, "┌ "+titleStyle.Render(title)+" "+
 		dimStyle.Render(strings.Repeat("─", fill))+" "+
@@ -194,7 +194,7 @@ func composerPopup(c *composeState, lay composerLayout, minimized bool, account 
 	// emoji is one or two cells depending on the terminal, and the padding
 	// absorbs the difference so Send stays flush right either way.
 	footY := len(lines)
-	gw := heyui.DisplayWidth(glyphDiscard)
+	gw := render.DisplayWidth(glyphDiscard)
 	send := bannerStyle.Render(" Send ")
 
 	pad := inner - gw - 2 - 9 - 6
@@ -231,8 +231,8 @@ func composeShowCC(c *composeState) bool {
 // still there so a half-written mail is never out of sight. Clicking the bar
 // restores it; the buttons keep their own meanings.
 func composerBar(c *composeState, lay composerLayout) (string, []Region) {
-	title := heyui.Truncate(composeTitle(c), maxInt(lay.w-7, 1))
-	fill := maxInt(lay.w-7-heyui.DisplayWidth(title), 0)
+	title := render.Truncate(composeTitle(c), maxInt(lay.w-7, 1))
+	fill := maxInt(lay.w-7-render.DisplayWidth(title), 0)
 
 	bar := glyphRestore + " " + titleStyle.Render(title) + " " +
 		dimStyle.Render(strings.Repeat("─", fill)) + " " +

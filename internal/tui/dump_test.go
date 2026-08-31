@@ -9,7 +9,7 @@ import (
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
-	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/render"
 )
 
 // TestDumpThreadRows prints the thread list so the layout can be looked at
@@ -155,7 +155,7 @@ func TestDumpCalendarDay(t *testing.T) {
 
 	h.m.view = viewCalendar
 	h.drain(t, h.m.loadEvents())
-	h.m.calTodos = []heyui.Todo{{ID: 1, Title: "Renew the domain"}}
+	h.m.calTodos = []render.Todo{{ID: 1, Title: "Renew the domain"}}
 	h.m.extraIdx = 1
 
 	t.Logf("selected = Design review\n%s\n", h.m.View())

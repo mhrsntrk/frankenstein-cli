@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
-	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/render"
 )
 
 // Run starts the program.
@@ -174,21 +174,21 @@ func (m *Model) header() string {
 
 	var b strings.Builder
 
-	b.WriteString(heyui.TopRule(w, "frankenstein", m.account))
+	b.WriteString(render.TopRule(w, "frankenstein", m.account))
 	b.WriteString("\n")
 
 	if m.chromeLevel < chromeMinimal {
-		b.WriteString(heyui.NavRow([]heyui.NavItem{
+		b.WriteString(render.NavRow([]render.NavItem{
 			{Label: "Mail"}, {Label: "Calendar"}, {Label: "Notes"},
 		}, int(m.section), true, w))
 		b.WriteString("\n")
 	}
 
-	b.WriteString(heyui.Rule(w, m.locationName()))
+	b.WriteString(render.Rule(w, m.locationName()))
 	b.WriteString("\n")
 
 	if m.view == viewCalendar && m.chromeLevel < chromeNoBoxBar {
-		b.WriteString(heyui.NavRow([]heyui.NavItem{
+		b.WriteString(render.NavRow([]render.NavItem{
 			{Label: "Day", Shortcut: "1"},
 			{Label: "Week", Shortcut: "2"},
 			{Label: "Year", Shortcut: "3"},
@@ -319,7 +319,7 @@ func (m *Model) boxBar(w int) string {
 		return ""
 	}
 
-	items := make([]heyui.NavItem, 0, len(m.quickBoxes))
+	items := make([]render.NavItem, 0, len(m.quickBoxes))
 	selected := -1
 
 	for i, b := range m.quickBoxes {
@@ -328,14 +328,14 @@ func (m *Model) boxBar(w int) string {
 			label = fmt.Sprintf("%s (%d)", b.Name, b.Unread)
 		}
 
-		items = append(items, heyui.NavItem{Label: label, Shortcut: fmt.Sprintf("%d", i+1)})
+		items = append(items, render.NavItem{Label: label, Shortcut: fmt.Sprintf("%d", i+1)})
 
 		if m.boxActive() && b.ID == m.box.ID {
 			selected = i
 		}
 	}
 
-	return heyui.NavRow(items, selected, m.boxActive(), w)
+	return render.NavRow(items, selected, m.boxActive(), w)
 }
 
 // categoryRow is the sub-row under the box bar: the inbox categories, drawn by
@@ -349,8 +349,8 @@ func (m *Model) categoryRow(w int) string {
 		return ""
 	}
 
-	items := make([]heyui.NavItem, 0, len(cats)+1)
-	items = append(items, heyui.NavItem{Label: categoryAllLabel})
+	items := make([]render.NavItem, 0, len(cats)+1)
+	items = append(items, render.NavItem{Label: categoryAllLabel})
 
 	selected := 0
 
@@ -360,14 +360,14 @@ func (m *Model) categoryRow(w int) string {
 			label = fmt.Sprintf("%s (%d)", b.Name, b.Unread)
 		}
 
-		items = append(items, heyui.NavItem{Label: label})
+		items = append(items, render.NavItem{Label: label})
 
 		if b.ID == m.categoryID {
 			selected = i + 1
 		}
 	}
 
-	return heyui.NavRow(items, selected, true, w)
+	return render.NavRow(items, selected, true, w)
 }
 
 // calendarHint turns Google's wall of JSON into the one sentence that says
@@ -455,7 +455,7 @@ func (m *Model) footer() string {
 		return statusStyle.Render(" "+status) + dimStyle.Render("  ? help")
 	}
 
-	return heyui.Rule(m.contentWidth(), "") + "\n" +
+	return render.Rule(m.contentWidth(), "") + "\n" +
 		statusStyle.Render(" "+status) + "\n" + m.keyHints()
 }
 
@@ -756,7 +756,7 @@ func placeholderPane(text string, width, height int) string {
 			continue
 		}
 
-		tw := heyui.DisplayWidth(text)
+		tw := render.DisplayWidth(text)
 		pad := maxInt(0, (width-tw)/2)
 		rest := maxInt(0, width-pad-tw)
 		lines = append(lines, strings.Repeat(" ", pad)+dimStyle.Render(text)+strings.Repeat(" ", rest))
@@ -915,10 +915,10 @@ func (m *Model) calendarView() string {
 			dimStyle.Render("  "+truncateStr(calendarHint(m.calErr), maxInt(20, m.contentWidth()-2)))
 	}
 
-	events := make([]heyui.Event, 0, len(m.events))
+	events := make([]render.Event, 0, len(m.events))
 
 	for _, e := range m.events {
-		events = append(events, heyui.Event{
+		events = append(events, render.Event{
 			ID:       e.ID,
 			Title:    e.Title,
 			AllDay:   e.AllDay,
@@ -932,14 +932,14 @@ func (m *Model) calendarView() string {
 
 	selected := ""
 	if i := m.extraIdx; i >= 0 && i < len(events) {
-		selected = heyui.Key(events[i])
+		selected = render.Key(events[i])
 	}
 
 	hint := "p/n " + m.calPeriodName()
 
 	// The todo ribbon takes rows from the grid, so the grid is told what is
 	// left rather than the whole height.
-	ribbon := heyui.TodosRibbon(m.calTodos, m.contentWidth())
+	ribbon := render.TodosRibbon(m.calTodos, m.contentWidth())
 
 	height := m.pageSize() - lineCount(ribbon)
 	if height < 6 {
@@ -947,7 +947,7 @@ func (m *Model) calendarView() string {
 		ribbon = ""
 	}
 
-	grid := heyui.Calendar(m.calKind(), events, m.calHabits, m.calAnchor(),
+	grid := render.Calendar(m.calKind(), events, m.calHabits, m.calAnchor(),
 		time.Monday, m.contentWidth(), height, hint, selected, true)
 
 	if ribbon == "" {
@@ -958,14 +958,14 @@ func (m *Model) calendarView() string {
 }
 
 // calKind maps the section's view onto the renderer's.
-func (m *Model) calKind() heyui.CalendarView {
+func (m *Model) calKind() render.CalendarView {
 	switch m.calView {
 	case calendarDay:
-		return heyui.CalendarDay
+		return render.CalendarDay
 	case calendarYear:
-		return heyui.CalendarYear
+		return render.CalendarYear
 	default:
-		return heyui.CalendarWeek
+		return render.CalendarWeek
 	}
 }
 
@@ -1008,6 +1008,7 @@ func (m *Model) helpView() string {
 	rows := [][2]string{
 		{"j k up down", "move"},
 		{"g G", "top, bottom"},
+		{"ctrl+d ctrl+u", "half a page down, up"},
 		{"enter", "open"},
 		{"esc backspace", "back"},
 		{"1-9", "jump to a box"},

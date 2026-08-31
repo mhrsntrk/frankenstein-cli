@@ -1,4 +1,4 @@
-package heyui
+package render
 
 // Helpers the calendar grids need, copied from the hey-cli files that define
 // them (MIT): the habit palette from habits.go and the elapsed-time format
@@ -11,8 +11,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	habitvalues "github.com/mhrsntrk/frankenstein-cli/internal/habit"
 	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
+	habitvalues "github.com/mhrsntrk/frankenstein-cli/internal/tui/render/habit"
 )
 
 // heyColors stands HEY's colors up as ANSI slots, for the reason styles.go and covers.go

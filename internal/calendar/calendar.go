@@ -1,6 +1,9 @@
 // Package calendar defines the provider-neutral calendar model.
 //
-// As with mail, nothing outside internal/calendar/... imports a Google type.
+// As with mail, the Google types stay in internal/calendar/google. The line is
+// softer here than the Proton one and is not enforced by CI: internal/cli
+// constructs the Google client directly, because the OAuth setup command has
+// to talk about client IDs and tokens to do its job.
 package calendar
 
 import (

@@ -9,7 +9,7 @@ import (
 
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
-	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/render"
 )
 
 // The two-pane mail view, Proton style: a message list on the left, the open
@@ -26,8 +26,8 @@ import (
 // looks it does not have: the initials block Proton draws as a sender avatar,
 // and the bright subject an unread row gets.
 var (
-	paneInitialsStyle = lipgloss.NewStyle().Foreground(heyui.Primary()).Bold(true)
-	paneBrightStyle   = lipgloss.NewStyle().Foreground(heyui.Bright())
+	paneInitialsStyle = lipgloss.NewStyle().Foreground(render.Primary()).Bold(true)
+	paneBrightStyle   = lipgloss.NewStyle().Foreground(render.Bright())
 )
 
 // paneStyler decorates every segment of a row, so a cursor row reads as one
@@ -36,14 +36,14 @@ type paneStyler func(lipgloss.Style) lipgloss.Style
 
 func plainRow(s lipgloss.Style) lipgloss.Style { return s }
 
-func cursorRow(s lipgloss.Style) lipgloss.Style { return heyui.SelectionStyle(s.Reverse(true)) }
+func cursorRow(s lipgloss.Style) lipgloss.Style { return render.SelectionStyle(s.Reverse(true)) }
 
 // restingCursorRow marks the row the cursor is on in a pane that does not
 // have focus. The place is still worth showing -- it is where the reader
 // will land on the way back -- but it must not compete with the pane being
 // read, so it keeps the bar and gives up the contrast.
 func restingCursorRow(s lipgloss.Style) lipgloss.Style {
-	return heyui.SelectionStyle(s.Reverse(true)).Faint(true)
+	return render.SelectionStyle(s.Reverse(true)).Faint(true)
 }
 
 // fitTo truncates and right-pads plain text to exactly w printable columns.
@@ -57,11 +57,11 @@ func fitTo(s string, w int) string {
 
 	s = strings.ReplaceAll(s, "\n", " ")
 
-	if heyui.DisplayWidth(s) > w {
-		s = heyui.Truncate(s, w)
+	if render.DisplayWidth(s) > w {
+		s = render.Truncate(s, w)
 	}
 
-	if pad := w - heyui.DisplayWidth(s); pad > 0 {
+	if pad := w - render.DisplayWidth(s); pad > 0 {
 		s += strings.Repeat(" ", pad)
 	}
 
@@ -72,11 +72,11 @@ func fitTo(s string, w int) string {
 // columns and pads it out, so every row leaves here exactly as wide as the
 // pane whatever a segment did.
 func fitLine(line string, width int) string {
-	if heyui.DisplayWidth(line) > width {
+	if render.DisplayWidth(line) > width {
 		line = ansi.Truncate(line, width, "")
 	}
 
-	if pad := width - heyui.DisplayWidth(line); pad > 0 {
+	if pad := width - render.DisplayWidth(line); pad > 0 {
 		line += strings.Repeat(" ", pad)
 	}
 
@@ -140,7 +140,7 @@ func listPane(convs []mail.Conversation, cursor, top int, selected func(string) 
 				continue
 			}
 
-			pad := maxInt(0, (width-heyui.DisplayWidth(msg))/2)
+			pad := maxInt(0, (width-render.DisplayWidth(msg))/2)
 			lines = append(lines, fitLine(strings.Repeat(" ", pad)+dimStyle.Render(msg), width))
 		}
 
@@ -195,7 +195,7 @@ func listRows(c mail.Conversation, checked bool, st paneStyler, width int) (stri
 		nameStyle = unreadStyle
 	}
 
-	nameW := width - 5 - heyui.DisplayWidth(timeStr) - 2
+	nameW := width - 5 - render.DisplayWidth(timeStr) - 2
 
 	row1 := st(lipgloss.NewStyle()).Render(" ") +
 		st(block).Render(initials(from)) +
@@ -218,7 +218,7 @@ func listRows(c mail.Conversation, checked bool, st paneStyler, width int) (stri
 		marker = "∗"
 	}
 
-	subjW := width - 5 - heyui.DisplayWidth(marker) - 2
+	subjW := width - 5 - render.DisplayWidth(marker) - 2
 
 	row2 := st(lipgloss.NewStyle()).Render("     ") +
 		st(subjStyle).Render(fitTo(subj, subjW)) +
@@ -280,12 +280,12 @@ func threadPane(th mail.Thread, msgIdx int, bodyLines []string, bodyTop int, wid
 
 	var regions []Region
 
-	starW := heyui.DisplayWidth(paneStar)
+	starW := render.DisplayWidth(paneStar)
 
 	for i, msg := range th.Messages {
 		timeStr := relTime(msg.Time)
 		suffix := paneStar + "  " + timeStr + " "
-		suffixW := starW + 2 + heyui.DisplayWidth(timeStr) + 1
+		suffixW := starW + 2 + render.DisplayWidth(timeStr) + 1
 		flexW := width - 1 - suffixW
 
 		regions = append(regions, Region{ID: fmt.Sprintf("msg:%d", i), X: 0, Y: len(lines), W: width, H: 1})
@@ -313,7 +313,7 @@ func threadPane(th mail.Thread, msgIdx int, bodyLines []string, bodyTop int, wid
 			addr = " <" + terminal.SanitizeLine(msg.From.Address) + ">"
 		}
 
-		if heyui.DisplayWidth(name) > flexW {
+		if render.DisplayWidth(name) > flexW {
 			name, addr = fitTo(name, flexW), ""
 		}
 
@@ -323,13 +323,13 @@ func threadPane(th mail.Thread, msgIdx int, bodyLines []string, bodyTop int, wid
 
 		lines = append(lines, fitLine(" "+
 			unreadStyle.Render(name)+
-			dimStyle.Render(fitTo(addr, flexW-heyui.DisplayWidth(name)))+
+			dimStyle.Render(fitTo(addr, flexW-render.DisplayWidth(name)))+
 			dimStyle.Render(suffix), width))
 
 		meta := " to " + joinDisplays(msg.To) + "  ·  " + msg.Time.Format("Mon, 2 Jan 2006 15:04")
 		lines = append(lines, fitLine(dimStyle.Render(fitTo(meta, width)), width))
 
-		lines = append(lines, fitLine(heyui.Rule(width, ""), width))
+		lines = append(lines, fitLine(render.Rule(width, ""), width))
 
 		for r := range bodyRows {
 			idx := bodyTop + r
@@ -353,14 +353,14 @@ func threadPane(th mail.Thread, msgIdx int, bodyLines []string, bodyTop int, wid
 
 		total := 0
 		for _, a := range actions {
-			total += heyui.DisplayWidth(" " + a.glyph + " " + a.label + " ")
+			total += render.DisplayWidth(" " + a.glyph + " " + a.label + " ")
 		}
 
 		x := maxInt(0, width-total)
 		row := strings.Repeat(" ", x)
 
 		for _, a := range actions {
-			w := heyui.DisplayWidth(" " + a.glyph + " " + a.label + " ")
+			w := render.DisplayWidth(" " + a.glyph + " " + a.label + " ")
 			regions = append(regions, Region{ID: a.id, X: x, Y: len(lines), W: w, H: 1})
 			row += " " + dimStyle.Render(a.glyph) + " " + a.label + " "
 			x += w

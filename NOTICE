@@ -6,28 +6,39 @@ This product includes software developed by 37signals LLC.
 The following files are copied from basecamp/hey-cli (MIT licensed,
 https://github.com/basecamp/hey-cli) and carry its copyright:
 
-  internal/tui/heyui/styles.go           the style set
-  internal/tui/heyui/theme.go            theme loading and contrast checks
-  internal/tui/heyui/width.go            grapheme-aware column widths
-  internal/tui/heyui/text.go             section headings and width fitting
-  internal/tui/heyui/nav.go              the rule, nav row and top rule
-  internal/tui/heyui/calendar_views.go   the day, week and year grids
-  internal/tui/heyui/calendar_types.go   the Recording row type
-  internal/tui/heyui/calendar_helpers.go the habit palette and time format
-  internal/habit/                        habit icon and colour values
-  internal/terminal/sanitize.go          escape-sequence stripping
+  internal/tui/render/styles.go            the style set
+  internal/tui/render/theme.go             theme loading and contrast checks
+  internal/tui/render/width.go             grapheme-aware column widths
+  internal/tui/render/text.go              section headings and width fitting
+  internal/tui/render/nav.go               the rule, nav row and top rule
+  internal/tui/render/calendar_views.go    the day, week and year grids
+  internal/tui/render/calendar_types.go    the Recording row type
+  internal/tui/render/calendar_helpers.go  the habit palette and time format
+  internal/tui/render/habit/values.go      habit icon and colour values
+  internal/tui/render/habit/days.go        weekday parsing and formatting
+  internal/terminal/sanitize.go            escape-sequence stripping
 
 They are kept as close to upstream as practical so they stay diffable
 against it. Local additions sit in separate files:
 
-  internal/tui/heyui/nav_api.go       chrome renderers for this project
-  internal/tui/heyui/theme_api.go     theme accessors for this project
-  internal/tui/heyui/calendar_api.go  the calendar entry points
+  internal/tui/render/nav_api.go       chrome renderers for this project
+  internal/tui/render/theme_api.go     theme accessors for this project
+  internal/tui/render/calendar_api.go  the calendar entry points
+
+The package comments in internal/tui/render/doc.go and
+internal/tui/render/habit/doc.go say the same thing at the source, and
+everything else in those directories, including the tests, is this
+project's own.
 
 Two copied functions carry a deliberate change, both in nav.go:
 renderTopRule hardcoded the HEY wordmark and takes a title instead, and
 renderNavLabel underlines a digit shortcut as a prefix rather than wherever
 the digit happens to occur inside the label.
+
+The directories were once named after where the code came from, and are
+not any more: internal/tui/heyui is now internal/tui/render, and
+internal/habit is now internal/tui/render/habit. The names say what the
+packages do; this file says where they came from.
 
 This project once followed HEY's workflow and no longer does: the screener,
 the Imbox, the Feed and the Paper Trail have been removed, and what remains

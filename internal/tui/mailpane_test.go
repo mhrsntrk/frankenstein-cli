@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
-	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/render"
 )
 
 // reverseSeq matches an SGR sequence carrying the reverse attribute, wherever
@@ -107,7 +107,7 @@ func requireBlock(t *testing.T, block string, width, height int) []string {
 	}
 
 	for i, l := range lines {
-		if w := heyui.DisplayWidth(l); w != width {
+		if w := render.DisplayWidth(l); w != width {
 			t.Errorf("line %d is %d columns, want %d: %q", i, w, width, l)
 		}
 	}

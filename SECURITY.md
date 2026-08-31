@@ -4,6 +4,9 @@ frankenstein holds a live Proton Mail session, a derived OpenPGP key passphrase
 and a local cache of decrypted message bodies. A bug here can expose a whole
 mailbox, so please report one privately rather than opening an issue.
 
+The project is an unreleased work in progress and has had no security review by
+anyone. Treat that as part of the threat model.
+
 ## Reporting a vulnerability
 
 Preferred: GitHub private vulnerability reporting, at
@@ -36,9 +39,12 @@ disclose earlier, say so in the report so the timeline is not a surprise.
 
 ## Supported versions
 
-Only the latest release is supported. Fixes ship in a new release; there are no
-backports to older tags. If you are running an older version, upgrade before
-reporting.
+There are no releases yet. Everyone is running a build from source, so the
+supported version is the current `main` and a report should name the commit it
+was built from. Reproduce against `main` before reporting if you can.
+
+Once there are tags, only the latest release is supported. Fixes ship in a new
+release; there will be no backports to older tags.
 
 ## What is in scope
 
@@ -95,8 +101,9 @@ are written as markdown into the same directory and are also plaintext.
 Full disk encryption is what protects the cache when the machine is off. Nothing
 in this tool protects it when the machine is on and your user is logged in.
 
-To remove everything, delete the config and data directories. Homebrew users can
-run `brew uninstall --zap frankenstein`, which does the same.
+To remove everything, delete the config and data directories. Once there is a
+Homebrew cask, `brew uninstall --zap frankenstein` will do the same; nothing is
+packaged yet.
 
 ## Handling reports
 

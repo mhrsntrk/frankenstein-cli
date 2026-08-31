@@ -9,7 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
-	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/render"
 )
 
 // The calendar picker: which of the account's calendars are drawn, and in
@@ -142,7 +142,7 @@ func (m *Model) applyCalendars(p *calendarPicker) tea.Cmd {
 	m.calNames = map[string]string{}
 
 	for _, c := range p.calendars {
-		m.calColours[c.ID] = heyui.ColourFor(c.Color)
+		m.calColours[c.ID] = render.ColourFor(c.Color)
 		m.calNames[c.ID] = c.Name
 	}
 
@@ -185,8 +185,8 @@ func (m *Model) calendarsView() string {
 		}
 
 		swatch := "  "
-		if name := heyui.ColourFor(c.Color); name != "" {
-			swatch = heyui.Swatch(name)
+		if name := render.ColourFor(c.Color); name != "" {
+			swatch = render.Swatch(name)
 		}
 
 		name := c.Name

@@ -1,9 +1,11 @@
 // Package mail defines the provider-neutral mail model and the interface a
 // backend must satisfy.
 //
-// Nothing outside internal/mail/... may import a Proton type. The TUI and the
-// command layer speak only the types declared here, so a second backend (or a
-// fake, for tests) is a matter of implementing Provider.
+// Only internal/mail/protonmail and internal/auth may import a Proton type,
+// which the Makefile's boundary target enforces: internal/auth needs one to
+// hold the session it opens. Everything above them speaks only the types
+// declared here, so a second backend (or a fake, for tests) is a matter of
+// implementing Provider.
 package mail
 
 import (

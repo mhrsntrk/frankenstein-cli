@@ -2,8 +2,8 @@ name: ci
 
 on:
   push:
-    # The default branch is master. main is listed too so a rename does not
-    # silently turn push CI off.
+    # The default branch is main. master is listed too so an older clone, or
+    # a revert of the rename, does not silently turn push CI off.
     branches: [main, master]
   pull_request:
 
@@ -56,7 +56,7 @@ jobs:
           cache: true
       # The version pin and the skipped-package list live in the Makefile, so
       # `make staticcheck` locally runs the same checker over the same packages
-      # as CI. internal/tui/heyui, internal/habit and internal/terminal are
+      # as CI. internal/tui/render, internal/tui/render/habit and internal/terminal are
       # skipped: they are copied from hey-cli and kept diffable against
       # upstream, so they carry helpers this client never calls and every one of
       # them trips the unused check. See NOTICE.

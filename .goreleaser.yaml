@@ -87,6 +87,8 @@ nfpms:
     maintainer: mhrsntrk <m@mhrsntrk.com>
     description: |-
       A terminal email client backed by Proton Mail and Google Calendar.
+      Work in progress: early, incomplete, and not yet stable. It acts on a
+      live mailbox, so do not rely on it as your only mail client.
     license: MIT
     formats:
       - deb
@@ -134,7 +136,7 @@ homebrew_casks:
       token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
     directory: Casks
     homepage: https://github.com/mhrsntrk/frankenstein-cli
-    description: A terminal email client backed by Proton Mail and Google Calendar
+    description: Work in progress terminal email client for Proton Mail and Google Calendar
     binaries:
       - frankenstein
     manpages:
@@ -165,7 +167,18 @@ homebrew_casks:
         - '~/.local/share/frankenstein'
 
     caveats: |
-      Get started with:
+      This is a work in progress: early, incomplete, and changing without
+      notice. It acts on a live Proton mailbox, so keep another mail client.
+
+      Set a client identifier first. frankenstein ships without one and will
+      not talk to Proton until you set it yourself:
+
+        mkdir -p "$HOME/Library/Application Support/frankenstein"
+        echo '{"app_version": "macos-bridge@3.26.0"}' \
+          > "$HOME/Library/Application Support/frankenstein/config.json"
+
+      The README section "Identifying to Proton" explains what that value is
+      and why the decision is left to you. Then:
 
         frankenstein login
         frankenstein sync
@@ -179,7 +192,7 @@ homebrew_casks:
 aurs:
   - name: frankenstein-bin
     homepage: https://github.com/mhrsntrk/frankenstein-cli
-    description: A terminal email client backed by Proton Mail and Google Calendar
+    description: Work in progress terminal email client for Proton Mail and Google Calendar
     maintainers:
       - 'mhrsntrk <m@mhrsntrk.com>'
     license: MIT
@@ -213,6 +226,14 @@ release:
     name: frankenstein-cli
   footer: |
     ---
+
+    **Work in progress.** Early, incomplete, and not stable. Commands, flags,
+    keys and `--json` shapes change between releases without notice, and this
+    acts on a live Proton mailbox. Do not make it your only mail client.
+
+    Before the first login you have to set `app_version` yourself; the tool
+    ships without one and `frankenstein login` prints the path and the line to
+    add. See "Identifying to Proton" in the README.
 
     ## Install
 

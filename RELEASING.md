@@ -1,5 +1,8 @@
 # Releasing
 
+Nothing has been released yet, so everything below is untested in anger. The
+project is a work in progress and the first tag is not scheduled.
+
 Releases are cut by tagging. GoReleaser builds every artifact, publishes the
 GitHub release, and updates the Homebrew tap and the AUR package.
 
@@ -62,11 +65,18 @@ Builds every artifact into `dist/` and publishes nothing. Worth looking at:
 - `dist/aur/frankenstein-bin.pkgbuild`
 - `tar tzf dist/frankenstein_*_linux_amd64.tar.gz`
 
-## The version pin that will expire
+## The example version that will expire
 
-`config.DefaultAppVersion` claims to be a specific Proton Bridge release.
-Proton retires old client versions with `422 code 5003`, at which point every
-command fails until it is bumped.
+Nothing is pinned: `config.DefaultAppVersion` is empty and a release ships no
+client identifier at all. Setting `app_version` is the user's decision, and the
+README's [Identifying to Proton](README.md#identifying-to-proton) section says
+why.
+
+What does go stale is the example. `config.ExampleAppVersion` is quoted back at
+anyone who runs `login` without an `app_version`, and it appears in the README
+and in the goreleaser caveats. Proton retires old client versions with
+`422 code 5003`, so an example naming a retired release sends people straight
+into an error.
 
 Before a release, check the current Bridge version:
 
@@ -74,6 +84,5 @@ Before a release, check the current Bridge version:
 gh api repos/ProtonMail/proton-bridge/releases/latest --jq .tag_name
 ```
 
-If it has moved, update `DefaultAppVersion` in `internal/config/config.go`.
-Users can work around a stale binary by setting `app_version` in their config,
-and the error message tells them so, but shipping a current pin is kinder.
+If it has moved, update `ExampleAppVersion` in `internal/config/config.go` and
+the same string wherever the docs quote it. Do not turn it back into a default.

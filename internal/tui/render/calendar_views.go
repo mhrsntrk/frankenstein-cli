@@ -1,4 +1,4 @@
-package heyui
+package render
 
 import (
 	"fmt"
@@ -10,8 +10,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	habitvalues "github.com/mhrsntrk/frankenstein-cli/internal/habit"
 	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
+	habitvalues "github.com/mhrsntrk/frankenstein-cli/internal/tui/render/habit"
 )
 
 // calendarViewMode represents the calendar display mode.

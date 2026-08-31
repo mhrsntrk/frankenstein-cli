@@ -10,7 +10,7 @@ STATICCHECK_VERSION := v0.8.1
 # this client never calls and staticcheck's unused check flags every one of
 # them; deleting them would make the files stop matching upstream, which is the
 # whole reason they are kept verbatim. See NOTICE.
-VENDORED_PKGS := /internal/(tui/heyui|habit|terminal)$$
+VENDORED_PKGS := /internal/(tui/render|tui/render/habit|terminal)$$
 
 .PHONY: build build-all install test test-race vet fmt fmt-check tidy docs \
 	snapshot staticcheck boundary check clean

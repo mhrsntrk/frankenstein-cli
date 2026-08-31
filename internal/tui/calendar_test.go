@@ -10,7 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
-	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
+	"github.com/mhrsntrk/frankenstein-cli/internal/tui/render"
 )
 
 // fakeCal records what the calendar was asked to do, and on which calendar.
@@ -112,10 +112,10 @@ func calHarness(t *testing.T) (*harness, *fakeCal) {
 func TestCalendarGridsAllRender(t *testing.T) {
 	h, _ := calHarness(t)
 
-	h.m.calHabits = []heyui.Habit{
+	h.m.calHabits = []render.Habit{
 		{ID: 1, Name: "read", Color: "red", Done: []time.Time{time.Now()}},
 	}
-	h.m.calTodos = []heyui.Todo{{ID: 1, Title: "Renew the domain"}}
+	h.m.calTodos = []render.Todo{{ID: 1, Title: "Renew the domain"}}
 
 	for _, c := range []struct {
 		name string
@@ -142,8 +142,8 @@ func TestCalendarShowsHabitsAndTodos(t *testing.T) {
 	h, _ := calHarness(t)
 
 	h.m.calView = calendarWeek
-	h.m.calHabits = []heyui.Habit{{ID: 1, Name: "read", Color: "red"}}
-	h.m.calTodos = []heyui.Todo{{ID: 1, Title: "Renew the domain"}}
+	h.m.calHabits = []render.Habit{{ID: 1, Name: "read", Color: "red"}}
+	h.m.calTodos = []render.Todo{{ID: 1, Title: "Renew the domain"}}
 
 	out := h.m.View()
 
@@ -507,10 +507,10 @@ func TestDumpCalendar(t *testing.T) {
 
 	h, _ := calHarness(t)
 
-	h.m.calHabits = []heyui.Habit{
+	h.m.calHabits = []render.Habit{
 		{ID: 1, Name: "read", Color: "red", Done: []time.Time{time.Now()}},
 	}
-	h.m.calTodos = []heyui.Todo{{ID: 1, Title: "Renew the domain"}}
+	h.m.calTodos = []render.Todo{{ID: 1, Title: "Renew the domain"}}
 	h.m.calColours = map[string]string{"work": "blue", "personal": "green"}
 
 	for i := range h.m.events {

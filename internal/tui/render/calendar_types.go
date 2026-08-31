@@ -1,7 +1,7 @@
 // Calendar row types, copied from basecamp/hey-cli internal/tui/calendar.go
 // (MIT). Kept so the week and day grids compile unchanged; the fields HEY
 // serves and Google does not are simply left unset.
-package heyui
+package render
 
 import (
 	"strconv"

@@ -4,6 +4,10 @@ about: Something is missing
 labels: enhancement
 ---
 
+This project is a work in progress and much of it is simply unbuilt rather than
+declined. A request is welcome, but there is no roadmap it goes onto and no
+commitment that it lands.
+
 **What you want to do**
 
 **How you would do it today, if at all**

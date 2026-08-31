@@ -12,8 +12,8 @@ import (
 // just look wrong: the terminal advances by what it drew, and every cell to the
 // right of it on that row shifts.
 //
-// The width is measured with ansi.StringWidth rather than heyui's displayWidth
-// because heyui imports this package, so a test here cannot import heyui back.
+// The width is measured with ansi.StringWidth rather than the render package's displayWidth
+// because the render package imports this one, so a test here cannot import it back.
 // The two agree on these clusters anyway: none of them is a ZWJ sequence, a
 // flag pair, a skin-toned emoji or a variation-selector base, which are the only
 // cases where displayWidth departs from the table.

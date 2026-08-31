@@ -4,14 +4,18 @@ The record of what Proton's API actually does, gathered during a throwaway
 spike before this client was written.
 
 Kept because the conclusions in the README are downstream of this evidence:
-why the client identifies as Proton Bridge, why the category label IDs are
-hardcoded, and which fields `go-proton-api` drops.
+why there is no client identifier this tool can ship, why the category label
+IDs are hardcoded, and which fields `go-proton-api` drops.
 
-Two notes on reading it. The text below describes closing the gap with a *fork*
-of go-proton-api, which is what was done at the time; the fork was later
+Three notes on reading it. The text below describes closing the gap with a
+*fork* of go-proton-api, which is what was done at the time; the fork was later
 replaced by the in-repo `internal/protonapi` client, so read "the fork" as "the
-extra endpoints". And "Running the spike" refers to a program that no longer
-exists.
+extra endpoints". "Running the spike" refers to a program that no longer
+exists. And finding #2 concludes "we must present as Proton Bridge": what was
+actually done is narrower, which is to ship no identifier at all and leave the
+decision to whoever runs the tool. `config.DefaultAppVersion` is empty and
+`login` refuses until `app_version` is set. See "Identifying to Proton" in the
+README.
 
 ---
 
@@ -143,8 +147,10 @@ Enough for the whole of Phase 1 at message level:
 
 Compiles clean. Not yet run — needs interactive credentials.
 
+The spike was a separate throwaway program and is not in this repository. Its
+flags are recorded because the findings below quote them:
+
 ```sh
-cd ~/Developer/frankenstein-spike
 go run .                      # defaults to macos-bridge@3.26.0
 go run . -debug               # dump HTTP traffic
 go run . -app-version=linux-bridge@3.26.0
@@ -268,7 +274,7 @@ the answers are better than expected.
 
 ### `/mail/v4/conversations` exists and returns exactly the HEY list model
 
-15,225 conversations on this account. Per-conversation:
+The endpoint returns the whole conversation list for the account. Per-conversation:
 
 ```
 ID  Order  Subject  Time  Size  NumMessages  NumUnread  NumAttachments
@@ -284,8 +290,8 @@ The `Context*` fields are per-label rollups — message and unread counts *withi
 the label being viewed*. That is precisely what a mailbox list view needs and it
 is the reason to wrap this endpoint rather than group messages client-side.
 
-`/mail/v4/conversations/count` returns `{LabelID, Total, Unread}` per label.
-Inbox 13,113; All Mail 15,225.
+`/mail/v4/conversations/count` returns `{LabelID, Total, Unread}` per label,
+which is where the unread badges come from without listing anything.
 
 ### The events endpoint carries Conversations deltas
 
@@ -388,7 +394,7 @@ land in each category on a real mailbox:
 | 21 | small | retailers, product marketing | Promotions |
 | 22 | medium | Apple Developer, GitHub, ad platforms | Updates |
 | 23 | never seen with mail | — | unknown |
-| 24 | **the bulk** | personal mail, banking, the user's accountant | Primary |
+| 24 | **the bulk** | personal mail, banking, correspondence with people | Primary |
 | 25 | small | Substack and subscription writing | Newsletters |
 | 26 | small | mailing lists, working groups | Forums |
 
