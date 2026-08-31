@@ -15,35 +15,37 @@ One Go binary. A full-screen TUI, a scriptable CLI, and `--json` on every
 command so an agent can drive it.
 
 ```
-───────────────────────────────────────── frankenstein ────────────────────── you@example.com ──
-                                     Mail  Calendar  Notes
-───────────────────────────── Re: contract review, one more clause ─────────────────────────────
-              1 Inbox (1)  2 Starred  3 Archive  4 Sent  5 Drafts  6 Spam  7 Trash
-                         All  Primary  Social  Promotions  Newsletters
+─────────────────────────────────────────── frankenstein ──────────────────────── you@example.com ──
+                                       Mail  Calendar  Notes
+────────────────────────────────────────────── Inbox ───────────────────────────────────────────────
+                1 Inbox (1)  2 Starred  3 Archive  4 Sent  5 Drafts  6 Spam  7 Trash
+                           All  Primary  Social  Promotions  Newsletters
 
-  YT  Yuki Tanaka               09:41  │ ┃ Yuki Tanaka <yuki@example.com>              ☆  09:41 
-      Re: contract review, one m...    │ ┃ to you@example.com  ·  Mon, 31 Aug 2026 09:41        
-  PR  Priya Raman               08:15  │ ┃──────────────────────────────────────────────────────
-      Thursday still good?             │ ┃
-  SO  Sam Okonkwo           Sat 13:41  │ ┃ Sorry to keep going on about this, but clause 4
-      [4] Photos from the weekend   ∗  │ ┃ still reads as though
-  BI  Building Inspector    Sat 09:41  │ ┃ the notice period runs from signature rather than
-      Certificate issued for 14 ...    │ ┃ from delivery.
-  DD  Dev Digest            Fri 09:41  │ ┃
-      Weekly: the state of Go 1.26     │ ┃ If that is deliberate, say so and I will stop.
-                                       │ ┃
-                                       │ ┃ Yuki
-                                       │ ┃                     ↩ reply  ↩↩ reply all  ↪ forward
+┃ YT  Yuki Tanaka                 09:41  │   Yuki Tanaka <yuki@example.com>                ☆  09:41
+┃     Re: contract review, one mor...    │   to you@example.com  ·  Mon, 31 Aug 2026 09:41
+┃ PR  Priya Raman                 08:15  │  ────────────────────────────────────────────────────────
+┃     Thursday still good?               │
+┃ SO  Sam Okonkwo             Sat 13:41  │   Sorry to keep going on about this, but clause 4 still
+┃     [4] Photos from the weekend     ∗  │   reads as though the notice period runs from signature
+┃ BI  Building Inspector      Sat 09:41  │   rather than from delivery.
+┃     Certificate issued for 14 Ro...    │
+┃ DD  Dev Digest              Fri 09:41  │   If that is deliberate, say so and I will stop asking.
+┃     Weekly: the state of Go 1.26       │
+┃ H   Hosting                 Thu 09:41  │   Yuki
+┃     [2] Your October invoice           │
+┃                                        │
+┃                                        │                         ↩ reply  ↩↩ reply all  ↪ forward
 
-────────────────────────────────────────────────────────────────────────────────────────────────
- synced 5 conversations
- j/k navigate · enter read · r reply · R reply all · f forward · a archive · t trash
- esc back · ? help · q quit
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ synced 6 conversations
+ j/k navigate · enter open · 1-9 box · [/] category · tab section · / filter · space select
+ ctrl+a all · c compose · r reply · f forward · v move · e seen · u unseen · s star
+ a archive · t trash · ! spam · ? help · q quit
 ```
 
-Real output, not a mock: that is the renderer drawing the fake mailbox the
-tests use, with the reading pane open. The bar down the left of a pane says
-which one the keys are driving.
+Real output, not a mock: the renderer drawing the fake mailbox the tests use.
+The bar down the left of a pane says which one the keys are driving, and the
+list is in date order, newest first, whether or not a message has been read.
 
 ## The idea
 
