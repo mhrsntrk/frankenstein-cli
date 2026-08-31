@@ -42,7 +42,10 @@ fmt:
 # The formatting gate, kept apart from fmt: fmt rewrites the tree, so running it
 # first would make this pass no matter what the tree looked like.
 fmt-check:
-	@gofmt -l . | tee /dev/stderr | (! read)
+	@files=$$(gofmt -l .); \
+	if [ -n "$$files" ]; then \
+		echo "not gofmt-clean:"; echo "$$files"; exit 1; \
+	fi
 
 tidy:
 	go mod tidy

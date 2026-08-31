@@ -23,7 +23,13 @@ jobs:
           cache: true
 
       - name: Check formatting
-        run: gofmt -l . | tee /dev/stderr | (! read)
+        run: |
+          files=$(gofmt -l .)
+          if [ -n "$files" ]; then
+            echo "not gofmt-clean:"
+            echo "$files"
+            exit 1
+          fi
 
       - name: Vet
         run: go vet ./...
