@@ -227,10 +227,12 @@ func Run(ctx context.Context) int {
 
 	root := &cobra.Command{
 		Use:   config.AppName,
-		Short: "A HEY-style terminal client for Proton Mail and Google Calendar",
-		Long: "frankenstein is a terminal client that applies HEY's workflow -- a screener,\n" +
-			"an Imbox, a Feed and a Paper Trail -- to a Proton mailbox, with a\n" +
-			"Google-backed calendar alongside it.\n\n" +
+		Short: "A terminal client for Proton Mail and Google Calendar",
+		Long: "frankenstein is a terminal client for a Proton mailbox, with a\n" +
+			"Google-backed calendar and local notes, todos, habits, time tracking\n" +
+			"and a journal alongside it.\n\n" +
+			"Mail is read from a local cache that `frankenstein sync` fills, so\n" +
+			"listing is instant and works offline.\n\n" +
 			"Every command supports --json.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -255,7 +257,6 @@ func Run(ctx context.Context) int {
 		newSendCmd(app),
 		newLabelCmd(app),
 		newNewslettersCmd(app),
-		newScreenerCmd(app),
 		newCalendarCmd(app),
 		newTodoCmd(app),
 		newHabitCmd(app),

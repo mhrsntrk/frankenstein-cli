@@ -10,7 +10,6 @@ import (
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
-	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
 	fsync "github.com/mhrsntrk/frankenstein-cli/internal/sync"
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
 )
@@ -45,10 +44,8 @@ type eventsMsg struct {
 	err    error
 	gen    int
 }
-type sendersMsg []screener.Sender
 type syncedMsg fsync.Result
 type chromeMsg struct {
-	pending int
 	account string
 }
 
@@ -57,7 +54,6 @@ type chromeMsg struct {
 type actionMsg struct {
 	note           string
 	reload         bool
-	rescreen       bool
 	reloadCalendar bool
 	reloadBands    bool
 	reloadNotes    bool
@@ -90,10 +86,6 @@ func (m *Model) loadChrome() tea.Cmd {
 	return bg(10*time.Second, func(ctx context.Context) tea.Msg {
 		out := chromeMsg{}
 
-		if n, err := m.store.PendingSenders(ctx); err == nil {
-			out.pending = n
-		}
-
 		if v, err := m.store.Meta(ctx, "account_email"); err == nil {
 			out.account = v
 		}
@@ -118,21 +110,6 @@ func (m *Model) loadConvs(boxID, search string) tea.Cmd {
 		}
 
 		return convsMsg{convs: convs, gen: gen}
-	})
-}
-
-func (m *Model) loadSenders() tea.Cmd {
-	return bg(20*time.Second, func(ctx context.Context) tea.Msg {
-		if m.screener == nil {
-			return sendersMsg(nil)
-		}
-
-		senders, err := m.screener.Pending(ctx, 500)
-		if err != nil {
-			return errMsg{err}
-		}
-
-		return sendersMsg(senders)
 	})
 }
 
@@ -276,10 +253,6 @@ func (m *Model) syncOnce() tea.Cmd {
 			return errMsg{err}
 		}
 
-		if m.screener != nil {
-			_, _ = m.screener.Observe(ctx)
-		}
-
 		return syncedMsg(res)
 	})
 }
@@ -318,99 +291,6 @@ func (m *Model) labelTargets(ids []string, target mail.Box, removeFromCurrent bo
 		return actionMsg{
 			note:   fmt.Sprintf("%s %s", note, plural(len(ids), "thread", "threads")),
 			reload: true,
-		}
-	})
-}
-
-// reapplyScreener routes mail that arrived after a screening decision, off
-// the render path like every other write.
-func (m *Model) reapplyScreener() tea.Cmd {
-	return bg(60*time.Second, func(ctx context.Context) tea.Msg {
-		n, err := m.screener.Reapply(ctx)
-		if err != nil {
-			return errMsg{err}
-		}
-
-		if n == 0 {
-			return nil
-		}
-
-		return actionMsg{
-			note:   fmt.Sprintf("screener routed %s", plural(n, "thread", "threads")),
-			reload: true,
-		}
-	})
-}
-
-// screenTargets applies a screener decision to the senders of the given
-// conversations, which is the whole point: deciding about a person, not a
-// thread.
-func (m *Model) screenTargets(ids []string, d screener.Decision) tea.Cmd {
-	addrs := make([]string, 0, len(ids))
-	seen := map[string]bool{}
-
-	for _, c := range m.convs {
-		if !contains(ids, c.ID) || len(c.Senders) == 0 {
-			continue
-		}
-
-		a := strings.ToLower(c.Senders[0].Address)
-		if a != "" && !seen[a] {
-			seen[a] = true
-			addrs = append(addrs, a)
-		}
-	}
-
-	if m.view == viewThread || m.view == viewMessage {
-		for _, msg := range m.thread.Messages {
-			a := strings.ToLower(msg.From.Address)
-			if a != "" && !seen[a] {
-				seen[a] = true
-				addrs = append(addrs, a)
-
-				break
-			}
-		}
-	}
-
-	return bg(60*time.Second, func(ctx context.Context) tea.Msg {
-		if m.screener == nil {
-			return errMsg{fmt.Errorf("screener is not set up; run `frankenstein screener setup`")}
-		}
-
-		n := 0
-
-		for _, a := range addrs {
-			moved, err := m.screener.Decide(ctx, a, d)
-			if err != nil {
-				return errMsg{err}
-			}
-
-			n += moved
-		}
-
-		return actionMsg{
-			note: fmt.Sprintf("%s → %s (%s)",
-				plural(len(addrs), "sender", "senders"), d,
-				plural(n, "thread", "threads")),
-			reload:   true,
-			rescreen: true,
-		}
-	})
-}
-
-// decideSender screens one sender from the screener view.
-func (m *Model) decideSender(address string, d screener.Decision) tea.Cmd {
-	return bg(60*time.Second, func(ctx context.Context) tea.Msg {
-		n, err := m.screener.Decide(ctx, address, d)
-		if err != nil {
-			return errMsg{err}
-		}
-
-		return actionMsg{
-			note:     fmt.Sprintf("%s → %s (%s)", address, d, plural(n, "thread", "threads")),
-			reload:   true,
-			rescreen: true,
 		}
 	})
 }
@@ -511,14 +391,4 @@ func plural(n int, one, many string) string {
 	}
 
 	return fmt.Sprintf("%d %s", n, many)
-}
-
-func contains(hay []string, needle string) bool {
-	for _, h := range hay {
-		if h == needle {
-			return true
-		}
-	}
-
-	return false
 }

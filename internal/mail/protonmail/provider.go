@@ -488,22 +488,6 @@ func (p *Provider) Newsletters(ctx context.Context) ([]fmail.Newsletter, error) 
 	return out, nil
 }
 
-func (p *Provider) RouteNewsletter(ctx context.Context, newsletterID, moveToBoxID string, markAsRead bool) error {
-	req := protonapi.UpdateNewsletterSubscriptionReq{
-		MarkAsRead: &markAsRead,
-	}
-
-	if moveToBoxID != "" {
-		req.MoveToFolder = &moveToBoxID
-	}
-
-	if _, err := p.api.UpdateNewsletterSubscription(ctx, newsletterID, req); err != nil {
-		return fmt.Errorf("route newsletter %s: %w", newsletterID, err)
-	}
-
-	return nil
-}
-
 func (p *Provider) Cursor(ctx context.Context) (string, error) {
 	id, err := p.api.LatestEventID(ctx)
 	if err != nil {

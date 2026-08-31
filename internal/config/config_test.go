@@ -77,13 +77,6 @@ func TestRoundTripKeepsUserValues(t *testing.T) {
 	cfg := Defaults()
 	cfg.Username = "m@example.com"
 	cfg.BodyCacheSize = 1000
-	cfg.Screener = ScreenerConfig{
-		ImboxID:       "im",
-		FeedID:        "fe",
-		PaperTrailID:  "pt",
-		ScreenedOutID: "so",
-		Enabled:       true,
-	}
 	cfg.Calendar.ClientSecret = "sekrit"
 
 	if err := Save(cfg); err != nil {
@@ -97,7 +90,6 @@ func TestRoundTripKeepsUserValues(t *testing.T) {
 
 	if got.Username != cfg.Username ||
 		got.BodyCacheSize != cfg.BodyCacheSize ||
-		got.Screener != cfg.Screener ||
 		got.Calendar.ClientSecret != cfg.Calendar.ClientSecret {
 		t.Fatalf("round trip lost values: got %+v", got)
 	}
@@ -131,7 +123,7 @@ func TestSaveOmitsDefaults(t *testing.T) {
 
 	raw := rawFile(t)
 
-	for _, k := range []string{"api_host", "app_version", "body_cache_size", "sync_interval", "screener"} {
+	for _, k := range []string{"api_host", "app_version", "body_cache_size", "sync_interval"} {
 		if _, ok := raw[k]; ok {
 			t.Errorf("default-valued %q written to file: %v", k, raw[k])
 		}

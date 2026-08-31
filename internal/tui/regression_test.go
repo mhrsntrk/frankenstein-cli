@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -9,7 +8,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
-	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
 )
 
 // Payloads a hostile sender could put in a name, a subject or a body. Each is
@@ -108,69 +106,6 @@ func TestHostileInputStaysInertInReader(t *testing.T) {
 
 	if !strings.Contains(joined, "decoded") {
 		t.Error("sanitizing removed legitimate body text")
-	}
-}
-
-func TestScreenerViewIsInertAndShowsTheRealAddress(t *testing.T) {
-	h := newHarness(t)
-
-	// A display name crafted to read as a harmless address, long enough that
-	// naive truncation would have pushed the real one off screen.
-	h.m.senders = []screener.Sender{{
-		Name:         "friend@bank.example <friend@bank.example>" + hostileCSI + strings.Repeat(" trusted", 10),
-		Address:      "evil@attacker.example",
-		MessageCount: 3,
-		LastSeen:     time.Now(),
-	}}
-	h.m.view = viewScreener
-
-	out := stripANSI(h.m.screenerView())
-	assertInert(t, "screenerView", h.m.screenerView())
-
-	if !strings.Contains(out, "evil@attacker.example") {
-		t.Error("the real address is not on screen untruncated")
-	}
-}
-
-func TestScreenerClickMapsToTheRowUnderThePointer(t *testing.T) {
-	h := newHarness(t)
-
-	if _, err := h.m.screener.Observe(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	h.press(t, "ctrl+s")
-
-	if h.m.view != viewScreener || len(h.m.senders) < 3 {
-		t.Fatalf("screener has %d senders in view %v", len(h.m.senders), h.m.view)
-	}
-
-	_ = h.m.View()
-
-	rows := h.m.chromeRows()
-	gutter := len(h.m.gutter())
-
-	// Two header lines precede the first sender row; the window starts at 0
-	// while the cursor is at the top.
-	h.clickAt(t, gutter+5, rows.body+screenerHeaderLines+2)
-
-	if h.m.senderIdx != 2 {
-		t.Errorf("clicking the third sender row moved the cursor to %d, want 2", h.m.senderIdx)
-	}
-}
-
-func TestSenderCursorClampsWhenTheQueueShrinks(t *testing.T) {
-	h := newHarness(t)
-
-	h.m.senders = []screener.Sender{
-		{Address: "a@x"}, {Address: "b@x"}, {Address: "c@x"}, {Address: "d@x"},
-	}
-	h.m.senderIdx = 3
-
-	h.m.Update(sendersMsg([]screener.Sender{{Address: "a@x"}, {Address: "b@x"}}))
-
-	if h.m.senderIdx != 1 {
-		t.Errorf("senderIdx = %d after the queue shrank to 2, want 1", h.m.senderIdx)
 	}
 }
 
@@ -287,13 +222,13 @@ func TestStaleConvsResponseIsDropped(t *testing.T) {
 
 	h.m.Update(stale)
 
-	if h.m.list.Len() != 3 {
-		t.Errorf("a stale conversations response was applied: %d rows", h.m.list.Len())
+	if h.m.list.len() != 3 {
+		t.Errorf("a stale conversations response was applied: %d rows", h.m.list.len())
 	}
 
 	h.m.Update(convsMsg{convs: nil, gen: h.m.convsGen})
 
-	if h.m.list.Len() != 0 {
+	if h.m.list.len() != 0 {
 		t.Error("the current-generation response was not applied")
 	}
 }
@@ -317,26 +252,71 @@ func TestLateThreadDoesNotYankTheUserOutOfAnotherSection(t *testing.T) {
 	}
 }
 
+// The thread list is strictly newest first. hey-cli's renderer grouped its
+// rows into "New for You" and "Previously Seen", which floated a three-day-old
+// unread newsletter above a conversation that arrived this morning; the order
+// the store delivered is now the order that is drawn, in both layouts.
+func TestThreadListIsStrictlyNewestFirst(t *testing.T) {
+	h := newHarness(t)
+	h.m.view = viewThreads
+
+	now := time.Now()
+
+	// Newest first, the way store.Conversations lists them. The newer one has
+	// been read and the older one has not, which is exactly the pair the
+	// sectioning used to reorder.
+	h.m.list.setConvs([]mail.Conversation{
+		{ID: "new", Subject: "Fresh and read", Time: now, NumMessages: 1,
+			Senders: []mail.Address{{Name: "Grace"}}},
+		{ID: "old", Subject: "Stale and unread", Time: now.Add(-72 * time.Hour),
+			NumMessages: 1, NumUnread: 1, Senders: []mail.Address{{Name: "Hopper"}}},
+	})
+
+	for _, c := range []struct {
+		name  string
+		width int
+	}{
+		{"single pane", 90},
+		{"split", 140},
+	} {
+		h.m.width, h.m.height = c.width, 30
+
+		out := stripANSI(h.m.View())
+
+		fresh := strings.Index(out, "Fresh and read")
+		stale := strings.Index(out, "Stale and unread")
+
+		if fresh < 0 || stale < 0 {
+			t.Fatalf("%s: both rows should be on screen:\n%s", c.name, out)
+		}
+
+		if fresh > stale {
+			t.Errorf("%s: the three-day-old unread row is drawn above this morning's read one",
+				c.name)
+		}
+	}
+}
+
 func TestSelectionSurvivesSnippetArrival(t *testing.T) {
 	h := newHarness(t)
 
 	h.press(t, "space")
 	h.press(t, "space")
 
-	if n := h.m.list.SelectionCount(); n != 2 {
+	if n := h.m.list.selectionCount(); n != 2 {
 		t.Fatalf("selected %d, want 2", n)
 	}
 
-	cursor := h.m.list.Cursor()
+	cursor := h.m.list.cursor
 
 	h.m.Update(snippetsMsg{"c1": "a preview line"})
 
-	if n := h.m.list.SelectionCount(); n != 2 {
+	if n := h.m.list.selectionCount(); n != 2 {
 		t.Errorf("snippet arrival wiped the selection: %d of 2 left", n)
 	}
 
-	if h.m.list.Cursor() != cursor {
-		t.Errorf("snippet arrival moved the cursor to %d, want %d", h.m.list.Cursor(), cursor)
+	if h.m.list.cursor != cursor {
+		t.Errorf("snippet arrival moved the cursor to %d, want %d", h.m.list.cursor, cursor)
 	}
 }
 
@@ -345,16 +325,16 @@ func TestActionReloadKeepsTheCursorNearby(t *testing.T) {
 
 	h.press(t, "j")
 
-	if h.m.list.Cursor() != 1 {
-		t.Fatalf("cursor = %d, want 1", h.m.list.Cursor())
+	if h.m.list.cursor != 1 {
+		t.Fatalf("cursor = %d, want 1", h.m.list.cursor)
 	}
 
 	// Mark read triggers a reload of the same listing; the cursor must not be
 	// thrown back to the top by it.
 	h.press(t, "e")
 
-	if h.m.list.Cursor() != 1 {
-		t.Errorf("the reload reset the cursor to %d, want 1", h.m.list.Cursor())
+	if h.m.list.cursor != 1 {
+		t.Errorf("the reload reset the cursor to %d, want 1", h.m.list.cursor)
 	}
 }
 
@@ -368,7 +348,7 @@ func TestBoxSwitchClearsTheThreadPane(t *testing.T) {
 		t.Fatal("the conversation did not open")
 	}
 
-	h.press(t, "2") // jump to Feed
+	h.press(t, "2") // jump to Starred
 
 	if h.m.thread.Conversation.ID != "" || len(h.m.bodyLines) != 0 {
 		t.Error("the previous box's thread is still in the right pane")
@@ -593,8 +573,8 @@ func TestMailOpensOnTheInboxThreadList(t *testing.T) {
 		t.Errorf("view after boxes = %v, want viewThreads", h.m.view)
 	}
 
-	// esc still reaches the full box list, which is where the screener's own
-	// boxes live now that they are off the bar.
+	// esc still reaches the full box list, which is where a box that is not
+	// on the numbered bar lives.
 	h.press(t, "esc")
 
 	if h.m.view != viewBoxes {

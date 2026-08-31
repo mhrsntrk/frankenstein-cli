@@ -10,7 +10,6 @@ import (
 	"golang.org/x/term"
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
-	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
 	"github.com/mhrsntrk/frankenstein-cli/internal/skill"
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui"
 )
@@ -123,8 +122,6 @@ func newTUICmd(app *App) *cobra.Command {
 				cal = c
 			}
 
-			sc := screener.New(st, p, cfg.Screener)
-
 			// Todos are local, so unlike the calendar they are always
 			// available: the ribbon works on a machine that has never seen a
 			// Google account.
@@ -153,7 +150,7 @@ func newTUICmd(app *App) *cobra.Command {
 				return saveConfig(current)
 			}
 
-			return tui.Run(tui.New(st, syncer, p, sc, ps, cal, todos, saveCalendars, cfg))
+			return tui.Run(tui.New(st, syncer, p, ps, cal, todos, saveCalendars, cfg))
 		},
 	}
 }

@@ -36,11 +36,11 @@ func renderRule(width int, label string) string {
 // renderNavLabel renders a nav label in the given style, underlining the
 // first occurrence of the shortcut letter (the Windows menu convention).
 // A shortcut absent from the label — a number — is shown as an underlined
-// prefix instead: "1 Imbox".
+// prefix instead: "1 Inbox".
 // renderNavLabel renders a nav label in the given style, underlining the
 // first occurrence of the shortcut letter (the Windows menu convention).
 // A shortcut absent from the label — a number — is shown as an underlined
-// prefix instead: "1 Imbox".
+// prefix instead: "1 Inbox".
 func renderNavLabel(label, shortcut string, base lipgloss.Style) string {
 	if shortcut == "" {
 		return base.Render(label)

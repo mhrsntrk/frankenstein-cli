@@ -22,7 +22,7 @@ var (
 )
 
 // Box is a mailbox: a system folder, a user folder, a label, or one of the
-// HEY-style boxes the screener maintains.
+// server-side categories the provider classifies mail into.
 type Box struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -37,8 +37,8 @@ type Box struct {
 	Unread int `json:"unread"`
 }
 
-// BoxKind separates the boxes a user made from the ones the server or this
-// tool maintains, because they behave differently on write.
+// BoxKind separates the boxes a user made from the ones the server maintains,
+// because they behave differently on write.
 type BoxKind string
 
 const (
@@ -46,11 +46,10 @@ const (
 	BoxFolder   BoxKind = "folder"
 	BoxLabel    BoxKind = "label"
 	BoxCategory BoxKind = "category"
-	BoxScreener BoxKind = "screener"
 )
 
-// Address is a participant. Provenance flags are kept because the screener
-// uses them, but they are optional for any provider that lacks them.
+// Address is a participant. The provenance flags come from Proton and are
+// optional for any provider that lacks them.
 type Address struct {
 	Name    string `json:"name,omitempty"`
 	Address string `json:"address"`
@@ -326,10 +325,6 @@ type Provider interface {
 	// Newsletters lists tracked mailing lists. Returns ErrNotSupported when
 	// the provider has no such concept.
 	Newsletters(ctx context.Context) ([]Newsletter, error)
-
-	// RouteNewsletter sets a server-side rule for a list, so it keeps applying
-	// with this tool shut down. Returns ErrNotSupported if unavailable.
-	RouteNewsletter(ctx context.Context, newsletterID, moveToBoxID string, markAsRead bool) error
 
 	// Cursor returns the current position in the event stream, for a first
 	// sync.

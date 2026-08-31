@@ -26,7 +26,7 @@ var (
 	colorBright   color.Color = lipgloss.BrightWhite // emphasized text
 	colorAlert                = lipgloss.Red         // attention: Omarchy themes signal alerts with red
 	colorPositive             = lipgloss.Green       // good outcomes: a sender screened in
-	colorNegative             = lipgloss.Red         // bad outcomes: a sender screened out
+	colorNegative             = lipgloss.Red         // bad outcomes
 	colorLink     color.Color = lipgloss.BrightCyan  // hyperlinks in email bodies (markdown style "14"); subjects match it
 	colorError    color.Color = lipgloss.Red         // errors
 
@@ -70,7 +70,6 @@ func applyTheme(theme Theme) {
 	if theme.Selection != nil && (theme.Trusted || contrastRatio(theme.Accent, theme.Selection) >= minSelectionContrast) {
 		colorSelection = theme.Selection
 	}
-	_, coverColorless = theme.Accent.(lipgloss.NoColor)
 	// The pill keeps its classic black text on the ANSI accent, but a themed
 	// accent can be dark enough that black is unreadable on it — lupine's blue
 	// carries black at only 3.7:1 — so pick whichever of black or white reads

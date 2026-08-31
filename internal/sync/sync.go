@@ -59,7 +59,6 @@ type Result struct {
 	Newsletters   int    `json:"newsletters"`
 	Evicted       int    `json:"evicted_bodies"`
 	Purged        int    `json:"purged"`
-	Senders       int    `json:"senders"`
 	FullResync    bool   `json:"full_resync"`
 	Cursor        string `json:"cursor"`
 }
@@ -170,7 +169,8 @@ func (s *Syncer) Backfill(ctx context.Context) (Result, error) {
 		s.progress("purged %d stale conversations", res.Purged)
 	}
 
-	// Newsletters are cheap and the screener leans on them heavily.
+	// Newsletters are cheap, and the listing is the only place the mailing
+	// list volume shows up, so they are refreshed on every pass.
 	if ns, err := s.provider.Newsletters(ctx); err == nil {
 		if err := s.store.PutNewsletters(ctx, ns); err != nil {
 			return res, err

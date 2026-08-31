@@ -1,13 +1,14 @@
 ---
 name: frankenstein
-description: Read and act on the user's Proton Mail and Google Calendar through the frankenstein CLI. Use when the user asks about their email, inbox, threads, senders, newsletters, calendar, todos, habits, tracked time, or journal. Triggers on "my email", "my inbox", "who emailed me", "what's on my calendar", "my todos", "screen this sender".
+description: Read and act on the user's Proton Mail and Google Calendar through the frankenstein CLI. Use when the user asks about their email, inbox, threads, newsletters, calendar, todos, habits, tracked time, or journal. Triggers on "my email", "my inbox", "who emailed me", "what's on my calendar", "my todos", "my newsletters".
 ---
 
 # frankenstein
 
-A terminal client for Proton Mail and Google Calendar with a HEY-style
-workflow. Every command accepts `--json`; always pass it, and parse the result
-rather than the human-readable table.
+A terminal client for Proton Mail and Google Calendar. Ordinary mail: the
+user's real Proton folders and labels, nothing invented on top of them. Every
+command accepts `--json`; always pass it, and parse the result rather than the
+human-readable table.
 
 ## Before anything else
 
@@ -26,8 +27,8 @@ not try to drive it. Tell the user to run it and stop.
 
 If the user wants to work through their mail themselves rather than have you do
 it, tell them to run `frankenstein tui` and press `?`. It has compose, reply,
-forward, screening, archive, trash, move and bulk selection. Do not try to
-drive it: it is a full-screen program and expects a human.
+forward, archive, trash, move and bulk selection. Do not try to drive it: it is
+a full-screen program and expects a human.
 
 Use the commands below when *you* are doing the work.
 
@@ -74,33 +75,16 @@ Without it the message is saved as a draft, which is the safe default: drafts
 can be reviewed and deleted, sent mail cannot be recalled. When in doubt,
 draft it and tell the user the draft ID.
 
-## The screener
-
-The HEY layer. First-time senders wait in a screener until the user decides
-where their mail goes: `imbox` (real correspondence), `feed` (read at
-leisure), `paper_trail` (keep, never read), or `screened_out` (never again).
+## Filing mail
 
 ```sh
-frankenstein screener status --json
-frankenstein screener list --suggest --json     # who is waiting, with a hint
-frankenstein screener decide <sender> feed --json
-frankenstein screener route --json              # push list rules server-side
+frankenstein label <thread-id> Archive --json
+frankenstein label <thread-id> Inbox --remove --json
 ```
 
-A decision is about the **sender**, not one message: it files everything that
-person has ever sent and everything they send next. Say so when you report a
-decision, because the blast radius surprises people.
-
-Decisions become real Proton labels, so they follow the user to the web and
-mobile apps.
-
-**Deciding is the user's call, not yours.** `--suggest` gives a recommendation
-based on Proton's own classification; surface it and let them choose. Only run
-`decide` when the user has named both the sender and the destination.
-
-`route` pushes newsletter decisions into Proton's server-side rules so they
-keep working with this tool shut down. It is safe and worth suggesting after a
-batch of `feed` or `paper_trail` decisions.
+Boxes are named the way Proton names them, and `boxes` is how you find out
+which exist. A label change is a real Proton change: it follows the user to
+the web and mobile apps immediately, and there is no undo here.
 
 ## Newsletters
 
@@ -141,8 +125,5 @@ once, which is interactive. Habits, time tracking and the journal are local.
 - **Errors come back as JSON too** (`{"error": "..."}`) with a non-zero exit.
   Read the message; `not logged in` and `session may have expired` both mean
   the user must run `login` themselves.
-- **Do not delete or archive mail** unless asked. There is no undo exposed
-  here.
-- **`screener route` writes rules to Proton's servers.** They keep applying
-  with this tool shut down, which is the point, but it means the change
-  outlives the command. Only run it when the user has asked.
+- **Do not delete, archive or relabel mail** unless asked. There is no undo
+  exposed here, and the change lands in the user's real Proton account.

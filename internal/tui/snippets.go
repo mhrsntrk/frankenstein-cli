@@ -27,7 +27,7 @@ const snippetPrefetchLimit = 12
 func (m *Model) prefetchSnippets() tea.Cmd {
 	var want []mail.Conversation
 
-	for _, c := range m.convs {
+	for _, c := range m.list.convs {
 		if strings.TrimSpace(c.Snippet) != "" {
 			continue
 		}

@@ -519,34 +519,6 @@ func (c *Client) NewsletterSubscriptions(ctx context.Context, filter NewsletterF
 	return all, fmt.Errorf("newsletter subscriptions still had more after %d pages: %w", maxWalkPages, ErrTruncated)
 }
 
-// UpdateNewsletterSubscriptionReq changes a list's server-side handling.
-// Fields left nil are not modified.
-type UpdateNewsletterSubscriptionReq struct {
-	MarkAsRead   *bool   `json:"MarkAsRead,omitempty"`
-	MoveToFolder *string `json:"MoveToFolder,omitempty"`
-	Spam         *bool   `json:"Spam,omitempty"`
-	Hidden       *bool   `json:"Hidden,omitempty"`
-}
-
-// UpdateNewsletterSubscription sets the auto mark-as-read and move-to-folder
-// rules Proton applies on its own servers.
-//
-// NOTE: the read path for subscriptions is verified against the live API; this
-// write path is not. The request shape is inferred from the fields the read
-// returns. Verify before relying on it.
-func (c *Client) UpdateNewsletterSubscription(ctx context.Context, id string, req UpdateNewsletterSubscriptionReq) (NewsletterSubscription, error) {
-	var res struct {
-		NewsletterSubscription NewsletterSubscription `json:"NewsletterSubscription"`
-	}
-
-	if err := c.do(ctx, http.MethodPut,
-		"/mail/v4/newsletter-subscriptions/"+url.PathEscape(id), nil, req, &res); err != nil {
-		return NewsletterSubscription{}, err
-	}
-
-	return res.NewsletterSubscription, nil
-}
-
 func chunkStrings(in []string, size int) [][]string {
 	if size <= 0 || len(in) == 0 {
 		return nil

@@ -91,6 +91,14 @@ var migrations = []func(*sql.Tx) error{
 
 		return err
 	},
+	// v4: the sender table backed a per-sender screening decision, a feature
+	// this tool no longer has. Nothing reads it, so an existing cache carries
+	// the rows forever unless they are dropped here.
+	func(tx *sql.Tx) error {
+		_, err := tx.Exec(`DROP TABLE IF EXISTS senders`)
+
+		return err
+	},
 }
 
 // migrate brings the database to the current schema: the base schema first
@@ -1183,18 +1191,4 @@ func boolInt(b bool) int {
 	}
 
 	return 0
-}
-
-// PendingSenders counts senders awaiting a screener decision. The TUI shows it
-// in a banner, so it needs to be one cheap query rather than a full listing.
-func (s *Store) PendingSenders(ctx context.Context) (int, error) {
-	var n int
-
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM senders WHERE decision = 'pending'`).Scan(&n)
-	if err != nil {
-		return 0, fmt.Errorf("count pending senders: %w", err)
-	}
-
-	return n, nil
 }

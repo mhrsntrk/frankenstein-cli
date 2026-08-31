@@ -25,6 +25,5 @@ problems.
 frankenstein --version
 ```
 
-Note whether `frankenstein sync` had been run, and whether
-`frankenstein screener setup` had been run, since several behaviours depend on
-a populated cache.
+Note whether `frankenstein sync` had been run, since the listings read a local
+cache and several behaviours depend on it being populated.

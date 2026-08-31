@@ -11,7 +11,6 @@ import (
 
 	fcal "github.com/mhrsntrk/frankenstein-cli/internal/calendar"
 	fmail "github.com/mhrsntrk/frankenstein-cli/internal/mail"
-	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
 	"github.com/mhrsntrk/frankenstein-cli/internal/terminal"
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
 )
@@ -63,7 +62,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case chromeMsg:
-		m.pending, m.account = msg.pending, msg.account
+		m.account = msg.account
 
 		return m, nil
 
@@ -77,27 +76,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The cursor survives a reload by clamping to the new length: an
 		// action-triggered refresh must not throw the reader back to the top.
 		// A box or filter switch resets it explicitly before loading.
-		cursor := m.list.Cursor()
-		m.setPostings(msg.convs)
-		m.list.SetCursor(clamp(cursor, 0, maxInt(0, m.list.Len()-1)))
-		m.list.ClearSelection()
-		m.paneTop = scrollTo(clamp(m.paneTop, 0, maxInt(0, m.list.Len()-1)),
-			m.list.Cursor(), maxInt(1, listPageSize(m.pageSize())))
+		m.list.setConvs(msg.convs)
+		m.list.clearSelection()
+		m.list.scrollInto(listPageSize(m.pageSize()))
 		m.loading = false
 
 		// The excerpt line is empty until a body has been decrypted, so ask for
 		// the ones now on screen.
 		return m, m.prefetchSnippets()
-
-	case sendersMsg:
-		m.senders = msg
-
-		// Clamp rather than reset: deciding mid-queue reloads the list, and a
-		// cursor thrown back to the top loses the reader's place in it.
-		m.senderIdx = clamp(m.senderIdx, 0, maxInt(0, len(m.senders)-1))
-		m.loading = false
-
-		return m, nil
 
 	case notesMsg:
 		m.notes = msg
@@ -258,29 +244,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case snippetsMsg:
-		// Fold the fetched previews into the rows already on screen, keeping
-		// the cursor and the selection where they were. SetPostings clears the
-		// selection, so it is captured first and re-applied, like the cursor.
-		for i := range m.convs {
-			if s, ok := msg[m.convs[i].ID]; ok {
-				m.convs[i].Snippet = s
+		// Fold the fetched previews into the rows already on screen. The rows
+		// are edited in place rather than replaced, so the cursor, the window
+		// and the selection are untouched by a preview arriving.
+		for i := range m.list.convs {
+			if s, ok := msg[m.list.convs[i].ID]; ok {
+				m.list.convs[i].Snippet = s
 			}
-		}
-
-		var selected []string
-
-		for _, c := range m.convs {
-			if m.list.Selected(heyui.PostingID(c.ID)) {
-				selected = append(selected, c.ID)
-			}
-		}
-
-		cursor := m.list.Cursor()
-		m.setPostings(m.convs)
-		m.list.SetCursor(cursor)
-
-		for _, id := range selected {
-			m.list.ToggleSelected(heyui.PostingID(id))
 		}
 
 		return m, nil
@@ -294,19 +264,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.loadConvs(m.listBoxID(), m.filter.Value()))
 		}
 
-		// A screening decision is about a person, so mail that arrived after
-		// the decision has to be routed too. Reapply is idempotent and makes
-		// no provider calls when there is nothing to do.
-		if m.screener != nil {
-			cmds = append(cmds, m.reapplyScreener())
-		}
-
 		return m, tea.Batch(cmds...)
 
 	case actionMsg:
 		m.loading = false
 		m.notify(msg.note)
-		m.list.ClearSelection()
+		m.list.clearSelection()
 
 		if m.compose != nil {
 			m.compose.sending = false
@@ -316,10 +279,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if msg.reload {
 			cmds = append(cmds, m.loadConvs(m.listBoxID(), m.filter.Value()), m.loadBoxes(), m.loadChrome())
-		}
-
-		if msg.rescreen {
-			cmds = append(cmds, m.loadSenders())
 		}
 
 		if msg.reloadBands {
@@ -460,8 +419,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// A section's own keys are read before the mail actions, or the shared
-	// letters never reach it: p is paper-trail and t is trash in the mail
-	// views, and both were swallowing the calendar's own meaning for them.
+	// letters never reach it: t is trash in the mail views, and it was
+	// swallowing the calendar's own meaning for it.
 	if m.view == viewCalendar {
 		if model, cmd, handled := m.calendarKey(msg); handled {
 			return model, cmd
@@ -583,9 +542,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case " ":
 		if m.view == viewThreads {
-			if p, ok := m.list.At(m.list.Cursor()); ok {
-				m.list.ToggleSelected(p.ID)
-				m.list.Move(1)
+			if c, ok := m.list.at(m.list.cursor); ok {
+				m.list.toggleSelected(c.ID)
+				m.list.move(1)
+				m.list.scrollInto(listPageSize(m.pageSize()))
 			}
 		}
 
@@ -593,38 +553,20 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+a":
 		if m.view == viewThreads {
-			if m.list.SelectionCount() == m.list.Len() {
-				m.list.ClearSelection()
+			if m.list.selectionCount() == m.list.len() {
+				m.list.clearSelection()
 			} else {
-				m.list.SelectAll()
+				m.list.selectAll()
 			}
 		}
 
 		return m, nil
-
-	case "ctrl+s":
-		m.push(viewScreener)
-		m.loading = true
-
-		return m, m.loadSenders()
 
 	case "e":
 		return m.applyMark(true)
 
 	case "u":
 		return m.applyMark(false)
-
-	case "i":
-		return m.applyScreen(screener.Imbox)
-
-	case "d":
-		return m.applyScreen(screener.Feed)
-
-	case "p":
-		return m.applyScreen(screener.PaperTrail)
-
-	case "x":
-		return m.applyScreen(screener.ScreenedOut)
 
 	case "a":
 		return m.applyMove("Archive", "archived")
@@ -662,7 +604,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.box = m.quickBoxes[i]
 			m.view = viewThreads
 			m.loading = true
-			m.list.ClearSelection()
+			m.list.clearSelection()
 			m.filter.SetValue("")
 			m.resetMailContext()
 
@@ -689,7 +631,7 @@ func (m *Model) selectCategory(i int) (tea.Model, tea.Cmd) {
 
 	m.view = viewThreads
 	m.loading = true
-	m.list.ClearSelection()
+	m.list.clearSelection()
 
 	// resetMailContext drops the category along with the rest of the previous
 	// listing, so the new one is set after it rather than before.
@@ -906,36 +848,6 @@ func (m *Model) applyMark(read bool) (tea.Model, tea.Cmd) {
 	m.loading = true
 
 	return m, m.markTargets(ids, read)
-}
-
-// applyScreen decides about the *senders* of the selected threads, which is
-// the difference between filing one message and screening a person.
-func (m *Model) applyScreen(d screener.Decision) (tea.Model, tea.Cmd) {
-	if m.view == viewScreener {
-		if m.senderIdx >= len(m.senders) {
-			return m, nil
-		}
-
-		s := m.senders[m.senderIdx]
-		m.loading = true
-
-		return m, m.decideSender(s.Address, d)
-	}
-
-	ids := m.targets()
-	if len(ids) == 0 {
-		return m, nil
-	}
-
-	if !m.cfg.Screener.Configured() {
-		m.err = fmt.Errorf("screener is not set up; run `frankenstein screener setup`")
-
-		return m, nil
-	}
-
-	m.loading = true
-
-	return m, m.screenTargets(ids, d)
 }
 
 // applyMove labels into a system box and unlabels the current one, so the
@@ -1391,14 +1303,14 @@ func (m *Model) goBack() (tea.Model, tea.Cmd) {
 	case viewThreads:
 		m.view = viewBoxes
 		m.filter.SetValue("")
-		m.list.ClearSelection()
+		m.list.clearSelection()
 	case viewNoteRead:
 		m.view = viewNotes
 	case viewEventDetail:
 		// The detail view's own esc pops the stack; h and left arrive here
 		// instead and have to do the same, or they are dead keys in it.
 		m.pop()
-	case viewScreener, viewCompose, viewMovePicker, viewEventForm,
+	case viewCompose, viewMovePicker, viewEventForm,
 		viewHabits, viewTodos, viewCalendars, viewNoteEdit:
 		m.compose = nil
 		m.eventForm = nil
@@ -1426,7 +1338,7 @@ func (m *Model) drillIn() (tea.Model, tea.Cmd) {
 		return m, m.loadConvs(m.box.ID, "")
 
 	case viewThreads:
-		c, ok := m.conversationAt(m.list.Cursor())
+		c, ok := m.list.at(m.list.cursor)
 		if !ok {
 			return m, nil
 		}
@@ -1454,13 +1366,11 @@ func (m *Model) itemCount() int {
 	case viewBoxes:
 		return len(m.boxes)
 	case viewThreads:
-		return m.list.Len()
+		return m.list.len()
 	case viewThread:
 		return len(m.thread.Messages)
 	case viewMessage:
 		return len(m.bodyLines)
-	case viewScreener:
-		return len(m.senders)
 	case viewCalendar:
 		return len(m.events)
 	case viewNotes:
@@ -1524,11 +1434,9 @@ func (m *Model) cursor() int {
 	case viewBoxes:
 		return m.boxIdx
 	case viewThreads:
-		return m.list.Cursor()
+		return m.list.cursor
 	case viewThread:
 		return m.msgIdx
-	case viewScreener:
-		return m.senderIdx
 	case viewCalendar, viewNotes:
 		return m.extraIdx
 	}
@@ -1549,17 +1457,10 @@ func (m *Model) setCursor(i int) {
 		m.boxIdx = i
 		m.boxFirst = scrollTo(m.boxFirst, i, m.pageSize())
 	case viewThreads:
-		m.list.SetCursor(i)
-
-		// The split view's list pane scrolls itself: it keeps the cursor in
-		// sight the way the single-pane list does through its own renderer.
-		if m.splitMail() {
-			m.paneTop = scrollTo(m.paneTop, i, maxInt(1, listPageSize(m.pageSize())))
-		}
+		m.list.setCursor(i)
+		m.list.scrollInto(listPageSize(m.pageSize()))
 	case viewThread:
 		m.msgIdx = i
-	case viewScreener:
-		m.senderIdx = i
 	case viewCalendar, viewNotes:
 		m.extraIdx = i
 	}
@@ -1568,11 +1469,9 @@ func (m *Model) setCursor(i int) {
 // pickQuickBoxes chooses what the number keys bind to: the system boxes, in
 // the order every other mail client puts them in.
 //
-// The screener's own boxes are deliberately absent. The bar says where mail
-// lives, and the Imbox, the Feed and the Paper Trail are not places mail rests
-// in this account: they are a queue you visit to decide about a sender. They
-// stay one keystroke away through ctrl+s, and one screen away in the full box
-// list, which is where a box that is not a destination belongs.
+// Only system boxes qualify. A label is a place mail is filed, not a place it
+// lives, so the bar would grow without bound if labels were eligible for it;
+// the full box list is where a box that is not a destination belongs.
 func pickQuickBoxes(boxes []fmail.Box) []fmail.Box {
 	var out []fmail.Box
 

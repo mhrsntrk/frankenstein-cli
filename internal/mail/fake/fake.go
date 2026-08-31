@@ -1,7 +1,8 @@
 // Package fake is an in-memory mail.Provider for tests.
 //
-// It exists so the store, the sync loop and the screener can be tested without
-// a Proton account, which is the whole point of the provider interface.
+// It exists so the store, the sync loop and the command layer can be tested
+// without a Proton account, which is the whole point of the provider
+// interface.
 package fake
 
 import (
@@ -38,9 +39,6 @@ type Provider struct {
 	// Labelled records Label calls as "convID:boxID".
 	Labelled   []string
 	Unlabelled []string
-
-	// Routed records RouteNewsletter calls.
-	Routed []string
 
 	cursor string
 }
@@ -285,19 +283,6 @@ func (p *Provider) Newsletters(context.Context) ([]mail.Newsletter, error) {
 	}
 
 	return append([]mail.Newsletter(nil), p.Newsies...), nil
-}
-
-func (p *Provider) RouteNewsletter(_ context.Context, id, boxID string, markAsRead bool) error {
-	if !p.SupportsNewsletters {
-		return mail.ErrNotSupported
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	p.Routed = append(p.Routed, fmt.Sprintf("%s:%s:%v", id, boxID, markAsRead))
-
-	return nil
 }
 
 func (p *Provider) Cursor(context.Context) (string, error) { return p.cursor, nil }

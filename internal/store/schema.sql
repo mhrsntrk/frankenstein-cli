@@ -113,22 +113,6 @@ CREATE TABLE IF NOT EXISTS newsletters (
     move_to_box_id TEXT NOT NULL DEFAULT ''
 );
 
--- The screener's own state: one row per sender address, holding the decision
--- the user made. This is local; the *effect* of a decision is written to the
--- provider as a real label so it follows the user to other clients.
-CREATE TABLE IF NOT EXISTS senders (
-    address     TEXT PRIMARY KEY,
-    name        TEXT NOT NULL DEFAULT '',
-    decision    TEXT NOT NULL DEFAULT 'pending',
-    decided_at  INTEGER,
-    first_seen  INTEGER NOT NULL DEFAULT 0,
-    last_seen   INTEGER NOT NULL DEFAULT 0,
-    message_count INTEGER NOT NULL DEFAULT 0,
-    newsletter_id TEXT NOT NULL DEFAULT ''
-);
-
-CREATE INDEX IF NOT EXISTS idx_senders_decision ON senders(decision);
-
 -- Phase 5 domains. Local only; Proton has no equivalent.
 CREATE TABLE IF NOT EXISTS habits (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,

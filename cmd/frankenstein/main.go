@@ -1,5 +1,5 @@
-// Command frankenstein is a HEY-style terminal client for Proton Mail and
-// Google Calendar.
+// Command frankenstein is a terminal client for Proton Mail and Google
+// Calendar.
 package main
 
 import (

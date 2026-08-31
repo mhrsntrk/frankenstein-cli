@@ -164,7 +164,9 @@ func (m *Model) scroll(delta, x int) (tea.Model, tea.Cmd) {
 
 	switch m.view {
 	case viewThreads:
-		m.list.ScrollBy(delta)
+		// The list spends two rows on a conversation, so a three-row wheel
+		// notch moves two of them.
+		m.list.scrollBy(delta * 2 / 3)
 	case viewMessage:
 		m.bodyTop = clamp(m.bodyTop+delta, 0, maxInt(0, len(m.bodyLines)-m.bodyViewRows()))
 	default:
@@ -182,9 +184,8 @@ func (m *Model) scrollSplit(delta, x int) (tea.Model, tea.Cmd) {
 
 	if col < listW {
 		// The list pane spends two rows on a conversation, so a three-row
-		// wheel notch moves two conversations. The list's own length is the
-		// bound, matching what the pane draws.
-		m.paneTop = clamp(m.paneTop+delta*2/3, 0, maxInt(0, m.list.Len()-listPageSize(h)))
+		// wheel notch moves two conversations.
+		m.list.scrollBy(delta * 2 / 3)
 
 		return m, nil
 	}
@@ -221,11 +222,6 @@ func (m *Model) click(x, y int) (tea.Model, tea.Cmd) {
 		return m.clickBoxes(col)
 	case y == rows.categories && rows.categories >= 0:
 		return m.clickCategories(col)
-	case y == rows.banner && rows.banner >= 0:
-		m.push(viewScreener)
-		m.loading = true
-
-		return m, m.loadSenders()
 	}
 
 	if y < rows.body {
@@ -254,12 +250,11 @@ type chromeRows struct {
 	// only where a category means anything.
 	categories int
 
-	banner int
-	body   int
+	body int
 }
 
 func (m *Model) chromeRows() chromeRows {
-	out := chromeRows{nav: -1, subnav: -1, boxes: -1, categories: -1, banner: -1}
+	out := chromeRows{nav: -1, subnav: -1, boxes: -1, categories: -1}
 
 	lines := strings.Split(m.header(), "\n")
 
@@ -291,11 +286,6 @@ func (m *Model) chromeRows() chromeRows {
 
 		if m.chromeLevel < chromeNoBoxBar && m.categoryRowShown() {
 			out.categories = row
-			row++
-		}
-
-		if m.chromeLevel < chromeNoBanner && m.pending > 0 {
-			out.banner = row
 			row++
 		}
 	}
@@ -351,7 +341,7 @@ func (m *Model) clickBoxes(col int) (tea.Model, tea.Cmd) {
 	m.box = m.quickBoxes[i]
 	m.view = viewThreads
 	m.loading = true
-	m.list.ClearSelection()
+	m.list.clearSelection()
 	m.filter.SetValue("")
 	m.resetMailContext()
 
@@ -416,22 +406,22 @@ func (m *Model) clickBody(col, line int) (tea.Model, tea.Cmd) {
 
 	switch m.view {
 	case viewThreads:
-		i, ok := m.list.IndexAtLine(line)
+		i, ok := m.list.indexAtLine(line)
 		if !ok {
 			return m, nil
 		}
 
 		// Clicking the row already under the cursor opens it; clicking any
 		// other row moves there first.
-		if i == m.list.Cursor() {
+		if i == m.list.cursor {
 			return m.drillIn()
 		}
 
-		m.list.SetCursor(i)
+		m.list.setCursor(i)
 
 		return m, nil
 
-	case viewBoxes, viewThread, viewScreener, viewNotes:
+	case viewBoxes, viewThread, viewNotes:
 		// The calendar is deliberately absent from this list: it is a grid,
 		// not one item per line, so mapping a screen row onto extraIdx only
 		// scrambled the selection. Its clickable surface is the Day/Week/Year
@@ -458,14 +448,14 @@ func (m *Model) clickSplit(col, line int) (tea.Model, tea.Cmd) {
 	h := maxInt(1, m.pageSize())
 
 	if col < listW {
-		i := m.paneTop + line/2
+		i := m.list.top + line/2
 
-		c, ok := m.conversationAt(i)
+		c, ok := m.list.at(i)
 		if line < 0 || line/2 >= listPageSize(h) || !ok {
 			return m, nil
 		}
 
-		m.list.SetCursor(i)
+		m.list.setCursor(i)
 		m.view = viewThreads
 		m.loading = true
 
@@ -520,11 +510,6 @@ func (m *Model) cursorLine() int {
 		return m.cursor() - m.boxFirst
 	case viewNotes:
 		return m.cursor() - m.notesWindowStart()
-	case viewScreener:
-		// The screener draws two header lines and then a window centred on the
-		// cursor, so the click math shares its start formula the way the notes
-		// list shares notesWindowStart.
-		return screenerHeaderLines + m.cursor() - m.screenerWindowStart()
 	default:
 		return m.cursor()
 	}

@@ -18,18 +18,18 @@ import (
 	"github.com/mhrsntrk/frankenstein-cli/internal/config"
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/personal"
-	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
 	"github.com/mhrsntrk/frankenstein-cli/internal/store"
 	fsync "github.com/mhrsntrk/frankenstein-cli/internal/sync"
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
 )
 
-// How much chrome is shown, in the order it is given up on a short terminal.
-// The title bar and the rule naming the box are never dropped: they are what
-// say where you are.
+// How much chrome is shown, in the order it is given up on a short terminal:
+// first the extras (today's agenda line, the footer's rule and key hints),
+// then the box bar, then the section row. The title bar and the rule naming
+// the box are never dropped: they are what say where you are.
 const (
 	chromeFull = iota
-	chromeNoBanner
+	chromeNoExtras
 	chromeNoBoxBar
 	chromeMinimal
 )
@@ -72,7 +72,6 @@ const (
 	viewThreads
 	viewThread
 	viewMessage
-	viewScreener
 	viewCompose
 	viewCalendar
 	viewNotes
@@ -95,8 +94,8 @@ const (
 	sectionNotes
 )
 
-// The chrome takes its colours from hey-cli's theme, so the parts this project
-// draws sit in the same palette as the rows their renderer draws.
+// The chrome takes its colours from hey-cli's theme, so the header, the lists
+// and the calendar grids all sit in one palette.
 var (
 	titleStyle    = lipgloss.NewStyle().Foreground(heyui.Bright()).Bold(true)
 	selectedStyle = lipgloss.NewStyle().Reverse(true)
@@ -157,7 +156,6 @@ type Model struct {
 	store    *store.Store
 	syncer   *fsync.Syncer
 	provider mail.Provider
-	screener *screener.Screener
 	personal *personal.Store
 
 	cal        fcal.Provider
@@ -189,17 +187,11 @@ type Model struct {
 	boxIdx   int
 	boxFirst int
 
-	convs []mail.Conversation
-	box   mail.Box
+	box mail.Box
 
-	// ordered caches orderedConvs' answer, because the split view asked for it
-	// every frame. It is invalidated by setPostings, the only place the list's
-	// ordering can change.
-	ordered []mail.Conversation
-
-	// list is hey-cli's own row renderer. It owns the cursor, the scroll
-	// position and the selection for the thread list.
-	list *heyui.List
+	// list is the thread list: the conversations, the cursor, the scroll
+	// window and the selection. It draws them in the order the store gave.
+	list mailList
 
 	thread mail.Thread
 	msgIdx int
@@ -260,9 +252,6 @@ type Model struct {
 
 	extraIdx int
 
-	senders   []screener.Sender
-	senderIdx int
-
 	compose *composeState
 
 	// composerMin and composerMax are the popup's window state: parked as a
@@ -270,10 +259,6 @@ type Model struct {
 	// survive the popup losing focus, the way Proton's window does.
 	composerMin bool
 	composerMax bool
-
-	// paneTop is the first conversation visible in the split view's list
-	// pane. The wheel moves it without moving the cursor.
-	paneTop int
 
 	eventForm *eventForm
 	band      *bandEditor
@@ -294,7 +279,6 @@ type Model struct {
 	// while one is picked, so the header and the box bar keep saying so.
 	categoryID string
 
-	pending int
 	account string
 
 	width, height int
@@ -321,7 +305,6 @@ func New(
 	st *store.Store,
 	syncer *fsync.Syncer,
 	p mail.Provider,
-	sc *screener.Screener,
 	ps *personal.Store,
 	cal fcal.Provider,
 	todos Todos,
@@ -346,7 +329,6 @@ func New(
 		store:          st,
 		syncer:         syncer,
 		provider:       p,
-		screener:       sc,
 		personal:       ps,
 		cal:            cal,
 		calendarIDs:    cfg.Calendar.Shown(),
@@ -360,7 +342,6 @@ func New(
 		cfg:            cfg,
 		filter:         filter,
 		moveFilter:     move,
-		list:           heyui.NewList(),
 		calView:        calendarWeek,
 
 		// Mail opens on the mail itself. The box list is a place to go when
@@ -396,20 +377,12 @@ func (m *Model) notify(s string) { m.flash = s }
 // there is one, otherwise the row under the cursor. This is what makes every
 // action work in bulk without a separate set of bulk commands.
 func (m *Model) targets() []string {
-	if m.list.SelectionCount() > 0 {
-		out := make([]string, 0, m.list.SelectionCount())
-
-		for _, c := range m.convs {
-			if m.list.Selected(heyui.PostingID(c.ID)) {
-				out = append(out, c.ID)
-			}
-		}
-
-		return out
+	if ids := m.list.selectedIDs(); len(ids) > 0 {
+		return ids
 	}
 
 	if m.view == viewThreads {
-		if c, ok := m.conversationAt(m.list.Cursor()); ok {
+		if c, ok := m.list.at(m.list.cursor); ok {
 			return []string{c.ID}
 		}
 	}
@@ -527,8 +500,8 @@ func (m *Model) resetMailContext() {
 	m.bodyLines = nil
 	m.msgIdx = 0
 	m.bodyTop = 0
-	m.paneTop = 0
-	m.list.SetCursor(0)
+	m.list.cursor = 0
+	m.list.top = 0
 }
 
 // splitMail reports whether the mail section draws the Proton-style two-pane

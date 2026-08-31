@@ -347,9 +347,10 @@ const (
 //	25  Substack and similar subscription writing
 //	26  mailing lists and working groups
 //
-// 24 being the default matters most, because it is the one the screener maps
-// to the Imbox. An earlier guess had 24 as "Transactions", which suggested
-// filing personal mail into the Paper Trail.
+// 24 being the catch-all matters most: anything Proton does not recognise
+// lands there, so it is the category to read as "ordinary mail" rather than as
+// a meaningful classification. An earlier guess had it as "Transactions",
+// which read a receipts bucket into what is really the default.
 const (
 	CategorySocialLabel      = "20"
 	CategoryPromotionsLabel  = "21"

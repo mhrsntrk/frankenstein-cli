@@ -12,9 +12,9 @@ import (
 	"github.com/mhrsntrk/frankenstein-cli/internal/tui/heyui"
 )
 
-// TestDumpHeyRows prints the thread list so the layout can be looked at rather
-// than guessed about. Run with DUMP_VIEW=1.
-func TestDumpHeyRows(t *testing.T) {
+// TestDumpThreadRows prints the thread list so the layout can be looked at
+// rather than guessed about. Run with DUMP_VIEW=1.
+func TestDumpThreadRows(t *testing.T) {
 	if os.Getenv("DUMP_VIEW") == "" {
 		t.Skip("set DUMP_VIEW=1 to print the rendered rows")
 	}
@@ -23,7 +23,7 @@ func TestDumpHeyRows(t *testing.T) {
 	now := time.Now()
 
 	h.m.width, h.m.height = 200, 26
-	h.m.convs = []mail.Conversation{
+	h.m.list.setConvs([]mail.Conversation{
 		{ID: "a", Subject: "Re: contract review, one more clause", Time: now.Add(-2 * time.Hour),
 			NumMessages: 1, NumUnread: 1, Snippet: "Sorry to keep going on about this, but clause 4 still reads as though",
 			Senders: []mail.Address{{Name: "Yuki Tanaka"}}},
@@ -36,8 +36,7 @@ func TestDumpHeyRows(t *testing.T) {
 		{ID: "d", Subject: "Certificate issued for 14 Rowan Street", Time: now.Add(-50 * time.Hour),
 			NumMessages: 1, Snippet: "Your building control completion certificate is attached to this message",
 			Senders: []mail.Address{{Name: "Building Inspector"}}},
-	}
-	h.m.setPostings(h.m.convs)
+	})
 	h.m.box = mail.Box{ID: "0", Name: "Inbox", Unread: 13}
 	h.m.quickBoxes = []mail.Box{
 		{ID: "0", Name: "Inbox", Unread: 13}, {ID: "10", Name: "Starred"},
@@ -53,7 +52,6 @@ func TestDumpHeyRows(t *testing.T) {
 		mail.Box{ID: "26", Name: "Forums", Kind: mail.BoxCategory},
 	)
 	h.m.account = "you@example.com"
-	h.m.pending = 7
 	h.m.view = viewThreads
 	h.m.status = "synced 414 conversations"
 
@@ -70,7 +68,6 @@ func TestDumpSplitMail(t *testing.T) {
 	h := newHarness(t)
 	h.m.width, h.m.height = 160, 34
 	h.m.account = "you@example.com"
-	h.m.pending = 7
 	h.m.status = "synced 414 conversations"
 
 	h.press(t, "enter") // opens c1 and expands its message

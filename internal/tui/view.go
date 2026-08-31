@@ -80,8 +80,6 @@ func (m *Model) View() string {
 		b.WriteString(m.threadView())
 	case viewMessage:
 		b.WriteString(m.messageView())
-	case viewScreener:
-		b.WriteString(m.screenerView())
 	case viewCalendar:
 		b.WriteString(m.calendarView())
 	case viewNotes:
@@ -167,10 +165,10 @@ func lineCount(s string) int {
 
 // --- chrome -----------------------------------------------------------------
 
-// header draws the four rows above the list, using hey-cli's own renderers so
-// the chrome sits in the same shape as the rows beneath it: a top rule with the
-// account on the right, a centred section row, a rule naming the box, a centred
-// row of numbered boxes, and the screener banner.
+// header draws the rows above the list, using hey-cli's own renderers so the
+// chrome sits in the same shape as the rows beneath it: a top rule with the
+// account on the right, a centred section row, a rule naming the box, and a
+// centred row of numbered boxes.
 func (m *Model) header() string {
 	w := m.contentWidth()
 
@@ -213,16 +211,9 @@ func (m *Model) header() string {
 				b.WriteString("\n")
 			}
 		}
-
-		if m.chromeLevel < chromeNoBanner {
-			if banner := m.screenerBanner(w); banner != "" {
-				b.WriteString(banner)
-				b.WriteString("\n")
-			}
-		}
 	}
 
-	if m.view == viewBoxes && m.chromeLevel < chromeNoBanner && len(m.events) > 0 {
+	if m.view == viewBoxes && m.chromeLevel < chromeNoExtras && len(m.events) > 0 {
 		b.WriteString(m.agendaLine())
 		b.WriteString("\n")
 	}
@@ -234,7 +225,7 @@ func (m *Model) header() string {
 func (m *Model) locationName() string {
 	switch m.view {
 	case viewThreads:
-		if n := m.list.SelectionCount(); n > 0 {
+		if n := m.list.selectionCount(); n > 0 {
 			return fmt.Sprintf("%s · %d selected", m.box.Name, n)
 		}
 
@@ -243,8 +234,6 @@ func (m *Model) locationName() string {
 		// The subject is provider text on its way into the title rule.
 		return truncateStr(terminal.SanitizeLine(m.thread.Conversation.Subject),
 			maxInt(10, m.contentWidth()/2))
-	case viewScreener:
-		return "The Screener"
 	case viewCompose:
 		return composeTitle(m.compose)
 	case viewEventForm:
@@ -306,9 +295,9 @@ func composeTitle(c *composeState) string {
 	}
 }
 
-// mailChrome reports whether the box bar and the screener banner belong on
-// screen: on the mail list screens, and on the split screen that stands in
-// for all of them, looking through an open composer.
+// mailChrome reports whether the box bar belongs on screen: on the mail list
+// screens, and on the split screen that stands in for all of them, looking
+// through an open composer.
 func (m *Model) mailChrome() bool {
 	bv := m.backView()
 
@@ -379,22 +368,6 @@ func (m *Model) categoryRow(w int) string {
 	}
 
 	return heyui.NavRow(items, selected, true, w)
-}
-
-// screenerBanner keeps the count of waiting senders in front of the reader. The
-// screener is the product; it should not be somewhere you go looking for.
-func (m *Model) screenerBanner(w int) string {
-	if m.pending == 0 {
-		return ""
-	}
-
-	noun := "senders"
-	if m.pending == 1 {
-		noun = "sender"
-	}
-
-	return heyui.Center(
-		bannerStyle.Render(fmt.Sprintf(" Screen %d first-time %s · ctrl+s ", m.pending, noun)), w)
 }
 
 // calendarHint turns Google's wall of JSON into the one sentence that says
@@ -477,7 +450,7 @@ func (m *Model) footer() string {
 		status = "working…"
 	}
 
-	if m.chromeLevel >= chromeNoBanner {
+	if m.chromeLevel >= chromeNoExtras {
 		// One line: the status, and a pointer to the help that lists the rest.
 		return statusStyle.Render(" "+status) + dimStyle.Render("  ? help")
 	}
@@ -502,8 +475,7 @@ func (m *Model) keyBindings() []keyBinding {
 			{"tab", "section"},
 			{"/", "filter"}, {"space", "select"}, {"ctrl+a", "all"},
 			{"c", "compose"}, {"r", "reply"}, {"f", "forward"}, {"v", "move"},
-			{"i", "imbox"}, {"d", "feed"}, {"p", "paper trail"}, {"x", "screen out"},
-			{"ctrl+s", "screener"}, {"e", "seen"}, {"u", "unseen"}, {"s", "star"},
+			{"e", "seen"}, {"u", "unseen"}, {"s", "star"},
 			{"a", "archive"}, {"t", "trash"}, {"!", "spam"},
 			{"?", "help"}, {"q", "quit"},
 		}
@@ -512,11 +484,6 @@ func (m *Model) keyBindings() []keyBinding {
 			{"j/k", "navigate"}, {"enter", "read"}, {"r", "reply"}, {"R", "reply all"},
 			{"f", "forward"}, {"a", "archive"}, {"t", "trash"},
 			{"esc", "back"}, {"?", "help"}, {"q", "quit"},
-		}
-	case viewScreener:
-		return []keyBinding{
-			{"j/k", "navigate"}, {"i", "imbox"}, {"d", "feed"}, {"p", "paper trail"},
-			{"x", "screen out"}, {"esc", "back"}, {"q", "quit"},
 		}
 	case viewCompose:
 		return []keyBinding{
@@ -666,24 +633,22 @@ func (m *Model) boxesView() string {
 	return b.String()
 }
 
-// threadsView hands the rows to hey-cli's renderer.
-//
-// The two-line layout, the cursor bar, the unread dot, the right-hand date
-// column and the section headings are all theirs; this only sizes the list and
-// tells it whether to split seen from unseen.
+// threadsView is the thread list on a terminal too narrow for the two-pane
+// layout. It draws through listPane, the same renderer the split view's list
+// uses, so there is one list in the program and one order it can be in.
 func (m *Model) threadsView() string {
-	if m.loading && m.list.Len() == 0 {
-		return dimStyle.Render("  loading…")
+	h := maxInt(1, m.pageSize())
+
+	if m.loading && m.list.len() == 0 {
+		return placeholderPane("loading…", m.contentWidth(), h)
 	}
 
-	// The same flag drives the section headings and the unread dot, so turning
-	// it off outside the Imbox also lost the dots. Any box that tracks unread
-	// wants both; Sent and Drafts do not.
-	m.list.HideSections(!m.tracksUnread())
+	m.list.clamp()
 
-	m.list.SetSize(m.contentWidth(), m.pageSize())
+	out, _ := listPane(m.list.convs, m.list.cursor, m.list.top,
+		m.list.isSelected, m.contentWidth(), h)
 
-	return m.list.View()
+	return out
 }
 
 // splitMailView is the Proton-style mail screen: the message list on the
@@ -694,17 +659,12 @@ func (m *Model) splitMailView() string {
 	h := maxInt(1, m.pageSize())
 	listW, _, threadW := m.paneGeom()
 
-	m.list.HideSections(!m.tracksUnread())
+	m.list.clamp()
 
-	convs := m.orderedConvs()
+	left, _ := listPane(m.list.convs, m.list.cursor, m.list.top,
+		m.list.isSelected, listW, h)
 
-	m.paneTop = clamp(m.paneTop, 0, maxInt(0, len(convs)-1))
-
-	left, _ := listPane(convs, m.list.Cursor(), m.paneTop, func(id string) bool {
-		return m.list.Selected(heyui.PostingID(id))
-	}, listW, h)
-
-	if m.loading && len(convs) == 0 {
+	if m.loading && m.list.len() == 0 {
 		left = placeholderPane("loading…", listW, h)
 	}
 
@@ -784,17 +744,6 @@ func placeholderPane(text string, width, height int) string {
 	}
 
 	return strings.Join(lines, "\n")
-}
-
-// tracksUnread reports whether the box on screen has a meaningful read state.
-// Sent and Drafts do not, so a "New for You" heading over them is nonsense.
-func (m *Model) tracksUnread() bool {
-	switch m.box.Name {
-	case "Sent", "Drafts", "Outbox", "All Sent", "All Drafts", "All Scheduled":
-		return false
-	default:
-		return true
-	}
 }
 
 // Side margins, so the content does not run into the edge of the window.
@@ -896,78 +845,6 @@ func (m *Model) messageView() string {
 
 	for i := m.bodyTop; i < end; i++ {
 		b.WriteString(m.bodyLines[i])
-		b.WriteString("\n")
-	}
-
-	return b.String()
-}
-
-// --- screener ---------------------------------------------------------------
-
-// screenerHeaderLines is what screenerView draws above the first sender row:
-// the explainer and the blank line under it. The mouse handler counts on it.
-const screenerHeaderLines = 2
-
-// screenerWindowStart is the first sender on screen. The view keeps the
-// cursor centred, and the mouse handler needs the same number to map a
-// clicked row back to a sender, so the formula lives once.
-func (m *Model) screenerWindowStart() int {
-	visible := maxInt(1, m.pageSize()-screenerHeaderLines)
-
-	return clamp(m.senderIdx-visible/2, 0, maxInt(0, len(m.senders)-visible))
-}
-
-// screenerView is the decision queue: one sender per row. Deciding here is
-// about a person, so it moves everything they have ever sent.
-//
-// The sender's real address gets its own right-aligned column that is never
-// truncated, and only the display name is cut to fit: a name crafted to read
-// as an address can no longer push the true one off screen. Both came from
-// the provider, so both are sanitized at this render boundary.
-func (m *Model) screenerView() string {
-	if m.loading && len(m.senders) == 0 {
-		return dimStyle.Render("  loading…")
-	}
-
-	if len(m.senders) == 0 {
-		return okStyle.Render("  Nobody waiting. The screener is empty.")
-	}
-
-	var b strings.Builder
-
-	b.WriteString(dimStyle.Render("  Decide once per sender. Everything they sent moves with them."))
-	b.WriteString("\n\n")
-
-	start := m.screenerWindowStart()
-	end := minInt(start+maxInt(1, m.pageSize()-screenerHeaderLines), len(m.senders))
-
-	for i := start; i < end; i++ {
-		s := m.senders[i]
-
-		name := terminal.SanitizeLine(s.Name)
-		addr := terminal.SanitizeLine(s.Address)
-
-		if name == "" {
-			name = addr
-		}
-
-		tag := "    "
-		if s.NewsletterID != "" {
-			tag = "list"
-		}
-
-		right := fmt.Sprintf("%5d msg  %-10s  %s  %s",
-			s.MessageCount, relTime(s.LastSeen), tag, addr)
-
-		nameW := maxInt(8, m.contentWidth()-heyui.DisplayWidth(right)-4)
-
-		line := "  " + fitTo(name, nameW) + "  " + right
-
-		if i == m.senderIdx {
-			line = selectedStyle.Render(padTo(line, m.contentWidth()))
-		}
-
-		b.WriteString(line)
 		b.WriteString("\n")
 	}
 
@@ -1126,12 +1003,6 @@ func (m *Model) helpView() string {
 		{"space", "select a thread"},
 		{"ctrl+a", "select all, or clear the selection"},
 		{"", ""},
-		{"i", "screen sender to the Imbox"},
-		{"d", "screen sender to the Feed"},
-		{"p", "screen sender to the Paper Trail"},
-		{"x", "screen sender out"},
-		{"ctrl+s", "open the screener queue"},
-		{"", ""},
 		{"e u", "mark read, mark unread"},
 		{"s", "star"},
 		{"a t !", "archive, trash, spam"},
@@ -1164,7 +1035,7 @@ func (m *Model) helpView() string {
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render("  Actions apply to the selection, or to the row under the cursor."))
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  Screening decides about a sender, so it moves everything they sent."))
+	b.WriteString(dimStyle.Render("  The list is newest first, whether a conversation has been read or not."))
 
 	return b.String()
 }

@@ -108,21 +108,18 @@ undefined: resty.NewByteMultipartStream
 
 This is undocumented in the library's README. It must go in ours.
 
-## 4. There is no filter/sieve API — which changes what "server-side screener" means
+## 4. There is no filter/sieve API, so nothing this tool decides is automatic
 
 `grep -ri sieve` returns nothing, and there are no filter endpoints. But
 `CreateLabel`, `UpdateLabel`, `DeleteLabel`, `LabelMessages` and
 `UnlabelMessages` all exist.
 
-So the chosen answer to Open Question 1 (server-side Proton labels) is still
-achievable in the part that matters: Imbox / Feed / Paper Trail become real
-Proton labels, visible on Proton web, iOS and Android. What is *not* available
-is server-side automatic routing. New mail only gets classified while
-frankenstein is running its sync loop. On the phone, an unscreened sender's
-mail lands in the plain Inbox until the CLI next runs.
-
-That is a product decision, not a blocker. Flagging it because "server-side"
-implied always-on, and it will not be.
+So labels this tool writes are real Proton labels, visible on Proton web, iOS
+and Android. What is *not* available is server-side automatic routing: a rule
+of our own would only ever be applied while frankenstein is running. Anything
+that has to keep working with this tool shut down must be expressed in a
+mechanism Proton already runs itself, which for mailing lists means the
+per-subscription rules in finding #12.
 
 ---
 
@@ -238,16 +235,15 @@ DisplaySenderImage
 Several of these are close to the product idea, not incidental:
 
 - **`CategoryID`** — observed values `21`, `22`, `24`. Proton is already
-  classifying inbound mail server-side. This is most of what Feed and Paper
-  Trail are supposed to do, computed for us, and it will hold on the phone
-  without our sync loop running. Note these IDs do **not** come back from
+  classifying inbound mail server-side, computed for us, and it holds on the
+  phone without our sync loop running. Note these IDs do **not** come back from
   `GetLabels` with types System/Folder/Label, so categories are either a
   further label type or their own endpoint. **Worth one targeted probe.**
 - **`NewsletterSubscriptionID`** — non-null on real newsletters, null on
-  personal mail. A direct Feed signal, and an unsubscribe handle.
-- **`IsProton`, `IsSimpleLogin`, `SpamScore`** — sender provenance, useful
-  screener inputs.
-- **`SnoozeTime`** — Proton has snooze; a HEY-style client should honour it.
+  personal mail. Tells mailing-list mail apart, and is an unsubscribe handle.
+- **`IsProton`, `IsSimpleLogin`, `SpamScore`** — sender provenance, worth
+  keeping on the model even where nothing reads it yet.
+- **`SnoozeTime`** — Proton has snooze; a client should honour it.
 - **`Order`** — the server's sort key, which a stable paginating cache wants.
 
 This changes the weight of the fork decision. It is no longer "fork to add
@@ -351,16 +347,13 @@ MarkAsRead  MoveToFolder
 
 Two things follow.
 
-First, this is a ready-made Feed dataset with engagement history — exactly the
-input a screener wants, and far better than anything we could derive from
-scratch.
+First, this is a ready-made mailing-list dataset with engagement history, far
+better than anything we could derive from scratch.
 
 Second, **`MoveToFolder` and `FilterID` are per-subscription routing rules that
 live on Proton's servers.** That partially revises finding #4. There is no
 general sieve API, but for newsletters specifically the routing *can* be
 server-side and always-on, working on the phone with our sync loop stopped.
-Since newsletters are most of what Feed and Paper Trail are for, this covers the
-majority of the screener's real workload.
 
 ### Verdict
 
@@ -399,12 +392,12 @@ land in each category on a real mailbox:
 | 25 | small | Substack and subscription writing | Newsletters |
 | 26 | small | mailing lists, working groups | Forums |
 
-The first guess had 24 as "Transactions", which made the screener suggest
-filing personal correspondence into the Paper Trail. 24 is the default box and
-holds roughly three quarters of the mailbox.
+The first guess had 24 as "Transactions", which reads a receipts bucket into
+what is really the catch-all: 24 is the default box and holds roughly three
+quarters of the mailbox.
 
-Nothing observed corresponds to a "Transactions" category, so the screener maps
-no category to Paper Trail. Guessing one would quietly hide real mail.
+Nothing observed corresponds to a "Transactions" category at all. Naming one
+would invite treating ordinary mail as filed-and-forgotten.
 
 ### Resuming a session burns the refresh token
 

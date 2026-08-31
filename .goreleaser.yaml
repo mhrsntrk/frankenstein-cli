@@ -80,8 +80,7 @@ nfpms:
     homepage: https://github.com/mhrsntrk/frankenstein-cli
     maintainer: mhrsntrk <m@mhrsntrk.com>
     description: |-
-      A terminal email client with HEY's workflow, backed by Proton Mail
-      and Google Calendar.
+      A terminal email client backed by Proton Mail and Google Calendar.
     license: MIT
     formats:
       - deb
@@ -121,7 +120,7 @@ homebrew_casks:
       token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
     directory: Casks
     homepage: https://github.com/mhrsntrk/frankenstein-cli
-    description: A terminal email client with HEY's workflow, backed by Proton Mail and Google Calendar
+    description: A terminal email client backed by Proton Mail and Google Calendar
     binaries:
       - frankenstein
     manpages:
@@ -166,7 +165,7 @@ homebrew_casks:
 aurs:
   - name: frankenstein-bin
     homepage: https://github.com/mhrsntrk/frankenstein-cli
-    description: A terminal email client with HEY's workflow, backed by Proton Mail and Google Calendar
+    description: A terminal email client backed by Proton Mail and Google Calendar
     maintainers:
       - 'mhrsntrk <m@mhrsntrk.com>'
     license: MIT

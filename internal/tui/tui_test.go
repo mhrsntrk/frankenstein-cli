@@ -14,7 +14,6 @@ import (
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail"
 	"github.com/mhrsntrk/frankenstein-cli/internal/mail/fake"
 	"github.com/mhrsntrk/frankenstein-cli/internal/personal"
-	"github.com/mhrsntrk/frankenstein-cli/internal/screener"
 	"github.com/mhrsntrk/frankenstein-cli/internal/store"
 	fsync "github.com/mhrsntrk/frankenstein-cli/internal/sync"
 )
@@ -50,10 +49,8 @@ func newHarness(t *testing.T) *harness {
 		{ID: "3", Name: "Trash", Kind: mail.BoxSystem},
 		{ID: "4", Name: "Spam", Kind: mail.BoxSystem},
 		{ID: "10", Name: "Starred", Kind: mail.BoxSystem},
-		{ID: "b1", Name: "Imbox", Kind: mail.BoxLabel},
-		{ID: "b2", Name: "Feed", Kind: mail.BoxLabel},
-		{ID: "b3", Name: "Paper Trail", Kind: mail.BoxLabel},
-		{ID: "b4", Name: "Screened Out", Kind: mail.BoxLabel},
+		{ID: "b1", Name: "Receipts", Kind: mail.BoxLabel},
+		{ID: "b2", Name: "Travel", Kind: mail.BoxLabel},
 	}
 
 	ctx := context.Background()
@@ -85,11 +82,6 @@ func newHarness(t *testing.T) *harness {
 	p.Bodies["m1"] = mail.Body{MessageID: "m1", MIMEType: "text/plain", Content: "hello there"}
 
 	cfg := config.Defaults()
-	cfg.Screener = config.ScreenerConfig{
-		ImboxID: "b1", FeedID: "b2", PaperTrailID: "b3", ScreenedOutID: "b4", Enabled: true,
-	}
-
-	sc := screener.New(st, p, cfg.Screener)
 	ps := personal.New(st.DB(), filepath.Join(dir, "journal"))
 
 	// Todos are wired to the real local store, exactly as skill.go wires
@@ -118,7 +110,7 @@ func newHarness(t *testing.T) *harness {
 		},
 	}
 
-	m := New(st, fsync.New(p, st), p, sc, ps, nil, todos, nil, cfg)
+	m := New(st, fsync.New(p, st), p, ps, nil, todos, nil, cfg)
 
 	// The notes folder must never be the real one: these tests write and
 	// delete files.
@@ -127,7 +119,7 @@ func newHarness(t *testing.T) *harness {
 	m.width, m.height = 100, 30
 	m.boxes = p.Boxen
 	m.quickBoxes = pickQuickBoxes(p.Boxen)
-	m.setPostings(convs)
+	m.list.setConvs(convs)
 	m.view = viewThreads
 	m.box = p.Boxen[0]
 	m.account = "me@example.com"
@@ -151,8 +143,6 @@ func (h *harness) press(t *testing.T, key string) {
 		msg = tea.KeyMsg{Type: tea.KeyTab}
 	case "space":
 		msg = tea.KeyMsg{Type: tea.KeySpace}
-	case "ctrl+s":
-		msg = tea.KeyMsg{Type: tea.KeyCtrlS}
 	case "ctrl+a":
 		msg = tea.KeyMsg{Type: tea.KeyCtrlA}
 	case "ctrl+d":
@@ -256,10 +246,10 @@ func TestNumberKeysJumpToBox(t *testing.T) {
 	}
 }
 
-// TestQuickBoxesAreConventionalAndSkipTheScreener pins the bar's contents. The
-// harness configures all four screener boxes and the account has them, so this
-// also shows they are kept off the bar rather than merely missing.
-func TestQuickBoxesAreConventionalAndSkipTheScreener(t *testing.T) {
+// TestQuickBoxesAreConventionalAndSkipLabels pins the bar's contents. The
+// account also carries labels, so this shows they are kept off the bar rather
+// than merely missing.
+func TestQuickBoxesAreConventionalAndSkipLabels(t *testing.T) {
 	h := newHarness(t)
 
 	var names []string
@@ -275,9 +265,8 @@ func TestQuickBoxesAreConventionalAndSkipTheScreener(t *testing.T) {
 	}
 
 	for _, b := range h.m.quickBoxes {
-		switch b.Name {
-		case "Imbox", "Feed", "Paper Trail", "Screened Out":
-			t.Errorf("%q is on the bar; the screener is a queue, not a place", b.Name)
+		if b.Kind != mail.BoxSystem {
+			t.Errorf("%q is on the bar; only system boxes belong there", b.Name)
 		}
 	}
 }
@@ -382,8 +371,8 @@ func TestClickingACategoryFiltersTheInbox(t *testing.T) {
 		t.Errorf("the box became %q; the category is a filter on the Inbox", h.m.box.Name)
 	}
 
-	if len(h.m.convs) != 1 || h.m.convs[0].ID != "c4" {
-		t.Errorf("the filtered listing is %+v, want only c4", h.m.convs)
+	if len(h.m.list.convs) != 1 || h.m.list.convs[0].ID != "c4" {
+		t.Errorf("the filtered listing is %+v, want only c4", h.m.list.convs)
 	}
 
 	// All puts the whole box back.
@@ -398,8 +387,8 @@ func TestClickingACategoryFiltersTheInbox(t *testing.T) {
 		t.Fatalf("clicking All left the filter at %q", h.m.categoryID)
 	}
 
-	if len(h.m.convs) != 4 {
-		t.Errorf("All listed %d conversations, want the whole Inbox of 4", len(h.m.convs))
+	if len(h.m.list.convs) != 4 {
+		t.Errorf("All listed %d conversations, want the whole Inbox of 4", len(h.m.list.convs))
 	}
 }
 
@@ -465,7 +454,7 @@ func TestSelectionAndBulkArchive(t *testing.T) {
 	h.press(t, "space")
 	h.press(t, "space")
 
-	if n := h.m.list.SelectionCount(); n != 2 {
+	if n := h.m.list.selectionCount(); n != 2 {
 		t.Fatalf("selected %d, want 2", n)
 	}
 
@@ -481,7 +470,7 @@ func TestSelectionAndBulkArchive(t *testing.T) {
 		t.Errorf("archive did not remove them from the inbox: %v", h.p.Unlabelled)
 	}
 
-	if h.m.list.SelectionCount() != 0 {
+	if h.m.list.selectionCount() != 0 {
 		t.Error("selection survived the action")
 	}
 }
@@ -526,82 +515,6 @@ func TestMarkReadAndUnread(t *testing.T) {
 
 	if h.m.err != nil {
 		t.Fatalf("mark unread errored: %v", h.m.err)
-	}
-}
-
-func TestScreeningDecidesAboutTheSender(t *testing.T) {
-	h := newHarness(t)
-
-	ctx := context.Background()
-
-	if _, err := h.m.screener.Observe(ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	// Cursor is on c1, from ada@example.com.
-	h.press(t, "d")
-
-	if h.m.err != nil {
-		t.Fatalf("screening errored: %v", h.m.err)
-	}
-
-	senders, err := h.m.screener.List(ctx, screener.Feed, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(senders) != 1 || senders[0].Address != "ada@example.com" {
-		t.Fatalf("feed senders = %+v, want ada", senders)
-	}
-
-	// The label goes on, and the other three screener labels come off, so a
-	// thread cannot sit in two screener boxes at once.
-	if !hasAll(h.p.Labelled, "c1:b2") {
-		t.Errorf("feed label missing: %v", h.p.Labelled)
-	}
-
-	if !hasAll(h.p.Unlabelled, "c1:b1", "c1:b3", "c1:b4") {
-		t.Errorf("other screener labels not cleared: %v", h.p.Unlabelled)
-	}
-}
-
-func TestScreenerQueueOpensAndDecides(t *testing.T) {
-	h := newHarness(t)
-
-	if _, err := h.m.screener.Observe(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	h.press(t, "ctrl+s")
-
-	if h.m.view != viewScreener {
-		t.Fatalf("ctrl+s gave view %v, want viewScreener", h.m.view)
-	}
-
-	if len(h.m.senders) == 0 {
-		t.Fatal("screener queue is empty")
-	}
-
-	first := h.m.senders[0].Address
-
-	h.press(t, "i")
-
-	if h.m.err != nil {
-		t.Fatalf("deciding in the queue errored: %v", h.m.err)
-	}
-
-	imbox, _ := h.m.screener.List(context.Background(), screener.Imbox, 0)
-
-	var found bool
-
-	for _, s := range imbox {
-		if s.Address == first {
-			found = true
-		}
-	}
-
-	if !found {
-		t.Errorf("%q was not moved to the imbox", first)
 	}
 }
 
@@ -797,8 +710,8 @@ func TestHelpTogglesAndAnyKeyCloses(t *testing.T) {
 		t.Fatal("? did not open help")
 	}
 
-	if !strings.Contains(h.m.View(), "screen sender to the Imbox") {
-		t.Error("help does not document screening")
+	if !strings.Contains(h.m.View(), "mark read, mark unread") {
+		t.Error("help does not document the mail keys")
 	}
 
 	h.press(t, "j")
@@ -811,21 +724,13 @@ func TestHelpTogglesAndAnyKeyCloses(t *testing.T) {
 func TestEveryViewRendersWithinWidth(t *testing.T) {
 	h := newHarness(t)
 
-	if _, err := h.m.screener.Observe(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	h.drain(t, h.m.loadSenders())
-
 	h.m.notes = []personal.Note{{Name: "today", Title: "Today", Updated: time.Now()}}
-	h.m.pending = 7
 
 	views := map[string]view{
 		"boxes":    viewBoxes,
 		"threads":  viewThreads,
 		"thread":   viewThread,
 		"message":  viewMessage,
-		"screener": viewScreener,
 		"calendar": viewCalendar,
 		"notes":    viewNotes,
 	}
@@ -868,19 +773,11 @@ func TestDumpViews(t *testing.T) {
 
 	h := newHarness(t)
 
-	if _, err := h.m.screener.Observe(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	h.drain(t, h.m.loadSenders())
-	h.m.pending = len(h.m.senders)
-
 	for _, v := range []struct {
 		name string
 		view view
 	}{
 		{"threads", viewThreads},
-		{"screener", viewScreener},
 		{"help", viewBoxes},
 	} {
 		h.m.view = v.view
@@ -918,11 +815,6 @@ func hasAll(hay []string, needles ...string) bool {
 func TestViewNeverOverflowsTheTerminal(t *testing.T) {
 	h := newHarness(t)
 
-	if _, err := h.m.screener.Observe(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	h.drain(t, h.m.loadSenders())
 	h.drain(t, h.m.loadThread("c1"))
 	h.drain(t, h.m.loadBody("m1"))
 
@@ -941,8 +833,7 @@ func TestViewNeverOverflowsTheTerminal(t *testing.T) {
 		})
 	}
 
-	h.m.setPostings(many)
-	h.m.pending = 7
+	h.m.list.setConvs(many)
 
 	sizes := [][2]int{{80, 24}, {100, 30}, {200, 50}, {300, 80}, {120, 14}, {60, 10}}
 
@@ -951,7 +842,6 @@ func TestViewNeverOverflowsTheTerminal(t *testing.T) {
 		"threads":  viewThreads,
 		"thread":   viewThread,
 		"message":  viewMessage,
-		"screener": viewScreener,
 		"calendar": viewCalendar,
 		"notes":    viewNotes,
 	}
@@ -984,7 +874,7 @@ func TestHeaderStaysOnScreen(t *testing.T) {
 		})
 	}
 
-	h.m.setPostings(many)
+	h.m.list.setConvs(many)
 	h.m.width, h.m.height = 120, 30
 	h.m.view = viewThreads
 
@@ -1061,12 +951,12 @@ func TestClickMovesTheCursorThenOpens(t *testing.T) {
 	rows := h.m.chromeRows()
 	gutter := len(h.m.gutter())
 
-	// The second posting: a section heading, then two lines each.
-	target := rows.body + 1 + 2
+	// The second conversation: two lines each, and no headings between them.
+	target := rows.body + 2
 
 	h.clickAt(t, gutter+10, target)
 
-	if got := h.m.list.Cursor(); got != 1 {
+	if got := h.m.list.cursor; got != 1 {
 		t.Fatalf("clicking the second row put the cursor at %d, want 1", got)
 	}
 
@@ -1125,7 +1015,7 @@ func TestSplitClickOpensAConversation(t *testing.T) {
 	// the cursor and opens what there is of the thread.
 	h.clickAt(t, gutter+10, rows.body+2)
 
-	if got := h.m.list.Cursor(); got != 1 {
+	if got := h.m.list.cursor; got != 1 {
 		t.Fatalf("clicking the second conversation put the cursor at %d, want 1", got)
 	}
 
@@ -1186,12 +1076,12 @@ func TestClickOutsideTheContentColumnIsIgnored(t *testing.T) {
 
 	_ = h.m.View()
 
-	before := h.m.list.Cursor()
+	before := h.m.list.cursor
 
 	// In the left margin, outside the centred column.
 	h.clickAt(t, 0, h.m.chromeRows().body+1)
 
-	if h.m.list.Cursor() != before {
+	if h.m.list.cursor != before {
 		t.Error("a click in the margin moved the cursor")
 	}
 }
@@ -1199,7 +1089,6 @@ func TestClickOutsideTheContentColumnIsIgnored(t *testing.T) {
 func TestClickOnTheBoxBarSwitchesBox(t *testing.T) {
 	h := newHarness(t)
 	h.m.width, h.m.height = 140, 30
-	h.m.pending = 3
 
 	_ = h.m.View()
 
@@ -1222,25 +1111,6 @@ func TestClickOnTheBoxBarSwitchesBox(t *testing.T) {
 	}
 }
 
-func TestClickOnTheScreenerBannerOpensTheQueue(t *testing.T) {
-	h := newHarness(t)
-	h.m.width, h.m.height = 140, 30
-	h.m.pending = 5
-
-	_ = h.m.View()
-
-	rows := h.m.chromeRows()
-	if rows.banner < 0 {
-		t.Skip("the banner is not being drawn at this size")
-	}
-
-	h.clickAt(t, len(h.m.gutter())+40, rows.banner)
-
-	if h.m.view != viewScreener {
-		t.Errorf("clicking the banner gave view %v, want viewScreener", h.m.view)
-	}
-}
-
 func TestWheelScrollsWithoutMovingTheCursor(t *testing.T) {
 	h := newHarness(t)
 	h.m.width, h.m.height = 120, 20
@@ -1255,22 +1125,22 @@ func TestWheelScrollsWithoutMovingTheCursor(t *testing.T) {
 		})
 	}
 
-	h.m.setPostings(many)
+	h.m.list.setConvs(many)
 
 	_ = h.m.View()
 
-	before := h.m.list.Cursor()
+	before := h.m.list.cursor
 
 	_, cmd := h.m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown})
 	h.drain(t, cmd)
 
-	if h.m.list.Cursor() != before {
+	if h.m.list.cursor != before {
 		t.Error("the wheel moved the cursor; it should only scroll")
 	}
 }
 
-// p and t are paper-trail and trash in the mail views, and were being taken
-// there before the calendar ever saw them. Only n and the digits worked.
+// t is trash in the mail views, and was being taken there before the calendar
+// ever saw it. Only n and the digits worked.
 func TestCalendarKeysAreNotEatenByMailActions(t *testing.T) {
 	h := newHarness(t)
 	h.m.section = sectionCalendar

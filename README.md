@@ -1,41 +1,34 @@
 # frankenstein
 
-A terminal email client with HEY's workflow, your mail in Proton and your
-calendar in Google.
+A terminal email client, your mail in Proton and your calendar in Google.
 
 One Go binary. A full-screen TUI, a scriptable CLI, and `--json` on every
 command so an agent can drive it.
 
 ```
-── Imbox ─────────────────────────────────────────────────── you@example.com ──
+── Inbox ─────────────────────────────────────────────────── you@example.com ──
    Mail   Calendar  Journal
-  1 Imbox (3) · 2 Feed (41) · 3 Paper Trail · 4 Screened Out · 5 Inbox (13)
-   Screen 7 first-time senders · ctrl+s
+  1 Inbox (13) · 2 Drafts · 3 Sent · 4 Archive · 5 Spam
 
-New for You
  • Yuki Tanaka            Re: contract review, one more clause              09:41
  • Priya Raman            Thursday still good?                              08:15
  • Sam Okonkwo            Photos from the weekend (4)                    Wed 21:02
-Previously Seen
    Building Inspector     Certificate issued for 14 Rowan Street         Wed 17:30
    Marta Silva            Re: invoice 2026-114                           Tue 11:48
    Dev Digest             Weekly: the state of Go 1.26                   Mon 06:00
 
- 2 senders -> feed (18 threads)   enter open  space select  c compose  ? help
+ 3 selected                       enter open  space select  c compose  ? help
 ```
 
 ## The idea
 
-Mail you want goes to the **Imbox**. Newsletters go to the **Feed**. Receipts
-and confirmations go to the **Paper Trail**. Anyone writing for the first time
-waits in the **screener** until you say yes or no.
+Your mailbox, as it already is. The boxes are your real Proton folders and
+labels, and every action here is a real Proton action, so anything you do
+follows you to the web and mobile apps.
 
-You decide once, about a person, and everything they have ever sent moves with
-them.
-
-Those four boxes are real Proton labels, so the sorting follows you to Proton's
-web and mobile apps. For mailing lists the routing is pushed further down into
-Proton's own server-side rules, which keep working with this tool shut down.
+The point is the client, not a filing system: mail is held in a local cache so
+listing is instant and works on a plane, and the same commands that draw the
+interface are scriptable and speak `--json`.
 
 ## Install
 
@@ -77,7 +70,6 @@ Every install carries man pages and completions for bash, zsh and fish.
 ```sh
 frankenstein login            # Proton, with a CAPTCHA the first time
 frankenstein sync             # fill the local cache
-frankenstein screener setup   # create the four labels in Proton
 frankenstein tui
 ```
 
@@ -117,8 +109,6 @@ Everything happens here. Press `?` for the full list.
 | `tab` | Mail, Calendar, Journal |
 | `c` `r` `R` `f` | compose, reply, reply all, forward |
 | `space` `ctrl+a` | select a thread, select all |
-| `i` `d` `p` `x` | screen sender to Imbox, Feed, Paper Trail, or out |
-| `ctrl+s` | open the screener queue |
 | `e` `u` `s` | mark read, unread, star |
 | `a` `t` `!` `v` | archive, trash, spam, move |
 | `/` | filter |
@@ -131,10 +121,6 @@ Everything happens here. Press `?` for the full list.
 
 Actions apply to your selection, or to the row under the cursor when nothing is
 selected, so bulk operations need no separate commands.
-
-Screening is the one worth understanding: `i` `d` `p` `x` decide about the
-**sender**, not the thread. One keystroke files every message that person has
-ever sent, and every one they send next.
 
 ## The CLI
 
@@ -151,9 +137,7 @@ frankenstein reply <message-id> --body "..." --send
 frankenstein drafts
 frankenstein send <draft-id>
 
-frankenstein screener list --suggest     # who is waiting, with a hint
-frankenstein screener decide a@b.com feed
-frankenstein screener route              # push list rules server-side
+frankenstein label <id> Archive          # add a label, --remove takes it off
 
 frankenstein newsletters                 # volume, unread, trackers, routing
 frankenstein calendar setup                # once, needs your own Google client
@@ -174,8 +158,8 @@ frankenstein skill install
 ```
 
 Writes a skill to `~/.claude/skills/frankenstein/` describing the command
-surface, the safety rules (never `--send` unprompted, never decide for the
-user) and the traps.
+surface, the safety rules (never `--send` unprompted, never file mail
+unasked) and the traps.
 
 ## How it works
 
@@ -201,7 +185,6 @@ internal/mail/protonmail  the Proton adapter, the only place Proton types exist
 internal/protonapi        the Proton endpoints go-proton-api does not model
 internal/store            SQLite warm cache
 internal/sync             backfill, then incremental event deltas
-internal/screener         the HEY layer
 internal/tui              Bubble Tea client
 internal/calendar/google  Google Calendar
 internal/personal         habits, time tracking, journal
@@ -292,9 +275,8 @@ make snapshot   # build every release artifact locally, publish nothing
 
 The test suite runs against `internal/mail/fake`, so it needs no Proton
 account. It covers the cache round-trips and eviction, the sync loop including
-resync, the screener's decisions and suggestions, the API decoding against
-captured payloads, and the TUI by driving real key events through the real
-update loop.
+resync, the API decoding against captured payloads, and the TUI by driving real
+key events through the real update loop.
 
 To look at the interface without a terminal:
 
@@ -306,11 +288,11 @@ DUMP_VIEW=1 go test ./internal/tui -run TestDumpViews -v
 
 Young, but the paths that matter have been exercised against a real Proton
 account: login with two-factor and human verification, sync, reading and
-decrypting, composing, sending, and screener labelling.
+decrypting, composing, sending, and labelling.
 
 Two write paths remain inferred rather than verified, because the read side is
 all Proton documents by example: updating a newsletter subscription and
-unsubscribing. `frankenstein screener route` depends on the first.
+unsubscribing.
 
 Releases are cut by tagging; see [RELEASING.md](RELEASING.md).
 
@@ -330,15 +312,12 @@ Issues and pull requests are welcome. A few things worth knowing:
 
 ## Credit
 
-The workflow, the command tree, the Bubble Tea navigation model, the
-`--json`-everywhere convention and the embedded skill packaging all follow
+The command tree, the Bubble Tea navigation model, the `--json`-everywhere
+convention and the embedded skill packaging all follow
 [**basecamp/hey-cli**](https://github.com/basecamp/hey-cli), which is MIT
 licensed and is the reason this project exists. The API client is entirely
-different; the ideas are theirs.
-
-HEY, and the Imbox / Feed / Paper Trail workflow, are creations of
-[37signals](https://37signals.com). This project is not affiliated with,
-endorsed by, or supported by them, and HEY is their trademark.
+different; the ideas are theirs. This project is not affiliated with, endorsed
+by, or supported by [37signals](https://37signals.com).
 
 Mail is powered by [**Proton Mail**](https://proton.me) through
 [`go-proton-api`](https://github.com/ProtonMail/go-proton-api),

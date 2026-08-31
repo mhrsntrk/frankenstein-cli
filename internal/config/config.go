@@ -41,29 +41,8 @@ type Config struct {
 	// SyncInterval is how often the background sync polls, in seconds.
 	SyncInterval int `json:"sync_interval,omitempty"`
 
-	// Screener holds the box IDs the HEY layer routes into. Empty until
-	// `frankenstein screener setup` has run.
-	Screener ScreenerConfig `json:"screener,omitempty"`
-
 	// Calendar is the Google Calendar configuration.
 	Calendar CalendarConfig `json:"calendar,omitempty"`
-}
-
-// ScreenerConfig records which provider boxes back each HEY-style box.
-type ScreenerConfig struct {
-	ImboxID       string `json:"imbox_id,omitempty"`
-	FeedID        string `json:"feed_id,omitempty"`
-	PaperTrailID  string `json:"paper_trail_id,omitempty"`
-	ScreenedOutID string `json:"screened_out_id,omitempty"`
-
-	// Enabled turns automatic routing on. Screening decisions are still
-	// recorded when off.
-	Enabled bool `json:"enabled,omitempty"`
-}
-
-// Configured reports whether the screener boxes exist.
-func (s ScreenerConfig) Configured() bool {
-	return s.ImboxID != "" && s.FeedID != "" && s.PaperTrailID != "" && s.ScreenedOutID != ""
 }
 
 // CalendarConfig holds the Google OAuth client. The token itself lives in the
