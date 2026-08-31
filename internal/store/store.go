@@ -397,7 +397,7 @@ func (s *Store) DeleteConversations(ctx context.Context, ids []string) error {
 	return tx.Commit()
 }
 
-// deleteConversationsTx does the actual work, shared with PruneConversations.
+// deleteConversationsTx does the actual work, shared with the delete paths.
 //
 // Messages carry no foreign key to conversations — a message event can arrive
 // before its conversation is cached — so their delete is explicit here rather
@@ -453,73 +453,6 @@ func (s *Store) DeleteMessages(ctx context.Context, ids []string) error {
 	}
 
 	return tx.Commit()
-}
-
-// PruneConversations deletes cached conversations in one box that a backfill
-// no longer saw: whatever the sweep finds was deleted or moved server-side
-// while the cursor was too old to tell us.
-//
-// seen is the union of IDs the whole backfill pass fetched, across every box,
-// so a thread that moved between two backfilled boxes is never purged. since
-// bounds the sweep to the window the backfill actually covered — a pass that
-// stopped at its depth cap has said nothing about older threads, so only rows
-// strictly newer than the oldest one fetched are candidates. The zero time
-// means the box was paged to exhaustion and the whole box is fair game.
-// Boundary ties on since are left alone; the next pass gets them.
-func (s *Store) PruneConversations(ctx context.Context, boxID string, seen map[string]bool, since time.Time) (int, error) {
-	query := `SELECT c.id FROM conversations c
-	          JOIN conversation_boxes cb ON cb.conversation_id = c.id
-	          WHERE cb.box_id = ?`
-	args := []any{boxID}
-
-	if !since.IsZero() {
-		query += ` AND c.time > ?`
-		args = append(args, since.Unix())
-	}
-
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return 0, fmt.Errorf("list prune candidates in %s: %w", boxID, err)
-	}
-
-	var stale []string
-
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-
-			return 0, err
-		}
-
-		if !seen[id] {
-			stale = append(stale, id)
-		}
-	}
-
-	if err := rows.Err(); err != nil {
-		rows.Close()
-
-		return 0, err
-	}
-
-	rows.Close()
-
-	if len(stale) == 0 {
-		return 0, nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-
-	if err := deleteConversationsTx(ctx, tx, stale); err != nil {
-		return 0, err
-	}
-
-	return len(stale), tx.Commit()
 }
 
 // ApplyMove records a move locally: the conversations gain one box and lose

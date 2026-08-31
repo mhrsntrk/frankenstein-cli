@@ -206,7 +206,11 @@ func TestNewslettersUnsupportedIsNotAnError(t *testing.T) {
 	}
 }
 
-func TestBackfillPurgesServerDeletedConversations(t *testing.T) {
+// The backfill only adds. It used to sweep away whatever it had not seen,
+// which meant one short page from the provider could make it delete a whole
+// mailbox's worth of live mail; a thread the server no longer has is a stale
+// row, and a stale row is the cheaper mistake.
+func TestBackfillNeverDeletesWhatItDidNotSee(t *testing.T) {
 	ctx := context.Background()
 	p, st, s := setup(t)
 
@@ -214,41 +218,26 @@ func TestBackfillPurgesServerDeletedConversations(t *testing.T) {
 		t.Fatalf("backfill: %v", err)
 	}
 
-	// Cache c2's messages too, so the purge can be seen taking them along.
-	p.Msgs["c2"] = []mail.Message{{ID: "m2", ConversationID: "c2", Subject: "Two"}}
-
-	if _, err := s.Thread(ctx, "c2"); err != nil {
-		t.Fatalf("thread: %v", err)
-	}
-
-	// c2 vanishes server-side while the cursor is too old to say so; the
-	// resync backfill has to notice on its own.
+	// The provider stops offering c2, exactly as it would for a thread that
+	// was deleted server-side, and for one the listing simply did not reach.
 	p.Convs = p.Convs[:1]
 
-	res, err := s.Backfill(ctx)
-	if err != nil {
+	if _, err := s.Backfill(ctx); err != nil {
 		t.Fatalf("resync backfill: %v", err)
 	}
 
-	if res.Purged != 1 {
-		t.Errorf("purged %d conversations, want 1", res.Purged)
-	}
-
-	if _, err := st.Conversation(ctx, "c2"); err != mail.ErrNotFound {
-		t.Errorf("server-deleted conversation survived the backfill: %v", err)
-	}
-
-	msgs, _ := st.Messages(ctx, "c2")
-	if len(msgs) != 0 {
-		t.Errorf("purge left messages behind: %+v", msgs)
+	if _, err := st.Conversation(ctx, "c2"); err != nil {
+		t.Errorf("the backfill deleted a conversation it merely did not see: %v", err)
 	}
 
 	if _, err := st.Conversation(ctx, "c1"); err != nil {
-		t.Errorf("live conversation was purged: %v", err)
+		t.Errorf("live conversation lost: %v", err)
 	}
 }
 
-func TestBackfillSweepStaysInsideItsDepth(t *testing.T) {
+// A shallow pass says nothing about what lies below it, so it must leave the
+// rest of the cache alone.
+func TestShallowBackfillLeavesDeeperMailAlone(t *testing.T) {
 	ctx := context.Background()
 	_, st, s := setup(t)
 
@@ -256,21 +245,14 @@ func TestBackfillSweepStaysInsideItsDepth(t *testing.T) {
 		t.Fatalf("backfill: %v", err)
 	}
 
-	// A shallower pass sees only the newest thread. c2 is deeper than the
-	// pass covered, so the sweep must not mistake unseen for deleted.
 	s.BackfillDepth = 1
 
-	res, err := s.Backfill(ctx)
-	if err != nil {
+	if _, err := s.Backfill(ctx); err != nil {
 		t.Fatalf("shallow backfill: %v", err)
 	}
 
-	if res.Purged != 0 {
-		t.Errorf("purged %d conversations beyond the backfill window", res.Purged)
-	}
-
 	if _, err := st.Conversation(ctx, "c2"); err != nil {
-		t.Errorf("conversation below the depth window was purged: %v", err)
+		t.Errorf("conversation below the depth window was deleted: %v", err)
 	}
 }
 

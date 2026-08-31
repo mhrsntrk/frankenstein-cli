@@ -58,7 +58,6 @@ type Result struct {
 	Messages      int    `json:"messages"`
 	Newsletters   int    `json:"newsletters"`
 	Evicted       int    `json:"evicted_bodies"`
-	Purged        int    `json:"purged"`
 	FullResync    bool   `json:"full_resync"`
 	Cursor        string `json:"cursor"`
 }
@@ -127,46 +126,13 @@ func (s *Syncer) Backfill(ctx context.Context) (Result, error) {
 		targets = defaultBackfillBoxes(boxes)
 	}
 
-	// Mark: every conversation this pass touches goes into seen, shared
-	// across boxes so a thread that moved between two backfilled boxes is
-	// counted as alive wherever it now lives.
-	seen := make(map[string]bool)
-	windows := make(map[string]window, len(targets))
-
 	for _, boxID := range targets {
-		n, w, err := s.backfillBox(ctx, boxID, seen)
+		n, err := s.backfillBox(ctx, boxID)
 		if err != nil {
 			return res, fmt.Errorf("backfill box %s: %w", boxID, err)
 		}
 
 		res.Conversations += n
-		windows[boxID] = w
-	}
-
-	// Sweep: anything cached in a backfilled box that this pass did not see
-	// was deleted or moved server-side while the cursor could not tell us.
-	// The sweep stays inside what the backfill actually covered — a box paged
-	// only to BackfillDepth says nothing about older threads, so those keep
-	// their cache entries rather than being wrongly purged.
-	for _, boxID := range targets {
-		w := windows[boxID]
-
-		since := w.oldest
-		if w.exhausted {
-			// The whole box was paged, so the whole box is covered.
-			since = time.Time{}
-		}
-
-		n, err := s.store.PruneConversations(ctx, boxID, seen, since)
-		if err != nil {
-			return res, fmt.Errorf("prune box %s: %w", boxID, err)
-		}
-
-		res.Purged += n
-	}
-
-	if res.Purged > 0 {
-		s.progress("purged %d stale conversations", res.Purged)
 	}
 
 	// Newsletters are cheap, and the listing is the only place the mailing
@@ -189,26 +155,22 @@ func (s *Syncer) Backfill(ctx context.Context) (Result, error) {
 	return res, nil
 }
 
-// window is what one box's backfill covered: everything newer than oldest,
-// or the entire box when the paging ran out before hitting BackfillDepth.
-// The purge sweep must not reach past it.
-type window struct {
-	oldest    time.Time
-	exhausted bool
-}
-
 // backfillBox pages through one box, caching conversation headers. Message
 // headers come along for the threads that get opened, not up front: fetching
 // every message of every thread is what makes a mirror rather than a cache.
 //
-// Every ID fetched is added to seen, for the purge sweep afterwards.
-func (s *Syncer) backfillBox(ctx context.Context, boxID string, seen map[string]bool) (int, window, error) {
+// The backfill only ever adds. It used to also sweep away anything it did not
+// see, so a resync would drop mail deleted server-side while the cursor was
+// too old to say so -- but a sweep decides what to delete from a sample a few
+// hundred rows deep, and one short page from the provider was enough to make
+// it mistake a whole mailbox for that sample and delete the rest. A cache
+// holding a thread the server no longer has is a stale row that the next
+// event or refetch corrects; a cache that deletes live mail makes it
+// invisible. The stale row is the better failure.
+func (s *Syncer) backfillBox(ctx context.Context, boxID string) (int, error) {
 	const page = 150
 
-	var (
-		convs int
-		w     window
-	)
+	var convs int
 
 	for offset := 0; offset < s.BackfillDepth; offset += page {
 		limit := page
@@ -223,38 +185,26 @@ func (s *Syncer) backfillBox(ctx context.Context, boxID string, seen map[string]
 			Desc:   true,
 		})
 		if err != nil {
-			return convs, w, err
+			return convs, err
 		}
 
 		if len(batch) == 0 {
-			w.exhausted = true
-
 			break
 		}
 
 		if err := s.store.PutConversations(ctx, batch); err != nil {
-			return convs, w, err
-		}
-
-		for _, c := range batch {
-			seen[c.ID] = true
-
-			if w.oldest.IsZero() || c.Time.Before(w.oldest) {
-				w.oldest = c.Time
-			}
+			return convs, err
 		}
 
 		convs += len(batch)
 		s.progress("cached %d conversations in box %s", convs, boxID)
 
 		if len(batch) < limit {
-			w.exhausted = true
-
 			break
 		}
 	}
 
-	return convs, w, nil
+	return convs, nil
 }
 
 // Incremental applies event deltas from the cursor forward.
