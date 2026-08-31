@@ -1,3 +1,9 @@
+<p align="center">
+  <img src="docs/logo.png" alt="frankenstein-cli" width="220">
+</p>
+
+<h1 align="center">frankenstein</h1>
+
 > **Work in progress.** This is early and incomplete. There are no releases,
 > nothing here is stable, and things will break without notice. Expect bugs.
 >
@@ -5,8 +11,6 @@
 > trashing, labelling and sending are real Proton actions and they follow you
 > to the web and mobile apps, so a mistake here is a real mistake. Do not trust
 > it as your only mail client.
-
-# frankenstein
 
 A terminal email client, your mail in Proton and your calendar in Google, with
 notes, todos, habits, time tracking and a journal kept locally alongside them.
